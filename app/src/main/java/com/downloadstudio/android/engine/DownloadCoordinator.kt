@@ -318,7 +318,7 @@ object DownloadCoordinator {
             }
             }
         } catch (e: Exception) {
-            if (id !in cancelled) update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", error = e.message ?: "Download failed") }
+            if (id !in cancelled && id !in thermalDeferred) update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", error = e.message ?: "Download failed") }
         } finally {
             active.remove(id)
             cancelled.remove(id)
@@ -398,7 +398,7 @@ object DownloadCoordinator {
         val eta = parts[3].trim().ifBlank { "—" }
         val downloaded = humanBytes(parts[4].trim().toLongOrNull() ?: 0L)
         update(id) { current ->
-            if (current.status == DownloadStatus.PAUSED || current.status == DownloadStatus.STOPPED || current.status == DownloadStatus.QUEUED)
+            if (current.status == DownloadStatus.PAUSED || current.status == DownloadStatus.STOPPED || current.status == DownloadStatus.QUEUED) current
             else current.copy(status = DownloadStatus.DOWNLOADING, progress = percent, speed = speed, eta = eta, downloaded = downloaded)
         }
     }

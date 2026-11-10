@@ -40,6 +40,7 @@ def main() -> int:
     require("addThermalStatusListener" in coordinator and "THERMAL_STOP_THRESHOLD" in coordinator, "Thermal guard missing")
     require("MAX_DOWNLOAD_RUNTIME_MS" in coordinator and "STALL_TIMEOUT_MS" in coordinator and "START_TIMEOUT_MS" in coordinator, "Bounded download monitoring missing")
     require("readStateTail" in coordinator and "fun readStateTail" in storage, "Tail-only log polling missing")
+    require("current.status == DownloadStatus.QUEUED) current" in coordinator, "Progress parser status guard is malformed or missing")
     require("while (true)" not in coordinator and "while (true)" not in main_activity, "Unbounded polling loop remains")
     require("--concurrent-fragments 1" in termux, "yt-dlp fragment concurrency limit missing")
     require("ds_watch_ticks" in termux and "-lt 360" in termux and "sleep 60" in termux, "Termux bounded watchdog missing")
