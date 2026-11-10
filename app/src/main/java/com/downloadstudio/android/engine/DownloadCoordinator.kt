@@ -316,7 +316,6 @@ object DownloadCoordinator {
                 signal(id, "INT")
                 if (id !in thermalDeferred) update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = stopReason) }
             }
-            }
         } catch (e: Exception) {
             if (id !in cancelled && id !in thermalDeferred) update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", error = e.message ?: "Download failed") }
         } finally {
