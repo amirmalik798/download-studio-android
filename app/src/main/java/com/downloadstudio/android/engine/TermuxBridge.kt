@@ -41,7 +41,7 @@ object TermuxBridge {
 
     fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
-    fun setupScript(): String = "pkg update -y && pkg upgrade -y && pkg install -y python ffmpeg && python -m pip install -U \"yt-dlp[default]\" && termux-setup-storage"
+    fun setupScript(): String = "pkg update -y && pkg upgrade -y && pkg install -y python ffmpeg coreutils && python -m pip install -U \"yt-dlp[default]\" && termux-setup-storage"
 
     fun engineCheckScript(destination: String): String {
         val state = "${destination.trimEnd('/')}/DownloadStudioState"
@@ -68,11 +68,21 @@ object TermuxBridge {
             // best H.264/MP4 video + M4A audio, then progressively broader fallbacks.
             "-f ${q("bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best")}"
         }
-        return "mkdir -p ${q(destination)} ${q(stateDir)}; " +
-            "rm -f ${q(log)} ${q(exit)} ${q(pid)}; " +
-            "PYTHONUNBUFFERED=1 yt-dlp $common $preset ${q(url)} > ${q(log)} 2>&1 & " +
-            "ds_pid=\$!; printf '%s' \"\$ds_pid\" > ${q(pid)}; wait \"\$ds_pid\"; " +
-            "ds_code=\$?; printf '%s' \"\$ds_code\" > ${q(exit)}; exit \"\$ds_code\""
+        return "mkdir -p " + q(destination) + " " + q(stateDir) + "; " +
+            "rm -f " + q(log) + " " + q(exit) + " " + q(pid) + "; " +
+            "PYTHONUNBUFFERED=1 yt-dlp $common $preset " + q(url) + " > " + q(log) + " 2>&1 & " +
+            "ds_pid=\$!; printf '%s' \"\$ds_pid\" > " + q(pid) + "; " +
+            "(ds_watch_ticks=0; ds_watch_start=\$(date +%s); " +
+            "while [ \"\$ds_watch_ticks\" -lt 360 ] && kill -0 \"\$ds_pid\" 2>/dev/null; do " +
+            "sleep 60; ds_watch_ticks=\$((ds_watch_ticks+1)); ds_now=\$(date +%s); " +
+            "ds_log_mtime=\$(stat -c %Y " + q(log) + " 2>/dev/null || echo \"\$ds_watch_start\"); " +
+            "ds_state=\$(ps -o stat= -p \"\$ds_pid\" 2>/dev/null | tr -d ' '); " +
+            "case \"\$ds_state\" in T*) ds_is_stopped=1 ;; *) ds_is_stopped=0 ;; esac; " +
+            "if [ \"\$((ds_now-ds_watch_start))\" -ge 21600 ] || { [ \"\$ds_is_stopped\" -eq 0 ] && [ \"\$((ds_now-ds_log_mtime))\" -ge 900 ]; }; then " +
+            "kill -INT \"\$ds_pid\" 2>/dev/null || true; break; fi; done) & " +
+            "ds_watch_pid=\$!; wait \"\$ds_pid\"; ds_code=\$?; " +
+            "kill \"\$ds_watch_pid\" 2>/dev/null || true; wait \"\$ds_watch_pid\" 2>/dev/null || true; " +
+            "printf '%s' \"\$ds_code\" > " + q(exit) + "; exit \"\$ds_code\""
     }
 
     fun signalScript(destination: String, id: String, signal: String): String {

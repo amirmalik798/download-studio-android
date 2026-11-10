@@ -34,6 +34,9 @@ jobs:
         with:
           gradle-version: '8.13'
 
+      - name: Validate source safeguards
+        run: python3 validation/verify_project.py
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 

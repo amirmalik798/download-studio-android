@@ -35,7 +35,7 @@ Or double-click `build-apk.bat`. The script checks the SDK and Gradle versions b
 
 ## Option C — GitHub Actions
 
-The project includes `.github/workflows/build-apk.yml`. Push the project to a GitHub repository, then open **Actions → Build Android APK → Run workflow**. After it completes, download the `download-studio-android-debug-apk` workflow artifact. The artifact contains the actual `app-debug.apk` created by Android's build tools.
+The project includes `.github/workflows/main.yml`. Push the project to a GitHub repository, then open **Actions → Build Android APK → Run workflow**. After it completes, download the `download-studio-android-debug-apk` workflow artifact. The artifact contains the actual `app-debug.apk` created by Android's build tools.
 
 ## Install the debug APK
 

@@ -1,6 +1,9 @@
 package com.downloadstudio.android.engine
 
 import android.content.Context
+import android.os.Build
+import android.os.PowerManager
+import android.os.SystemClock
 import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
@@ -22,6 +25,12 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 object DownloadCoordinator {
+    private const val MONITOR_INTERVAL_MS = 2_000L
+    private const val START_TIMEOUT_MS = 30_000L
+    private const val STALL_TIMEOUT_MS = 15 * 60 * 1_000L
+    private const val MAX_DOWNLOAD_RUNTIME_MS = 6 * 60 * 60 * 1_000L
+    private const val THERMAL_DEFER_THRESHOLD = 2
+    private const val THERMAL_STOP_THRESHOLD = 3
     private lateinit var appContext: Context
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
@@ -31,9 +40,13 @@ object DownloadCoordinator {
     private val stateLock = Any()
     private val active = ConcurrentHashMap<String, Job>()
     private val cancelled = ConcurrentHashMap.newKeySet<String>()
+    private val thermalDeferred = ConcurrentHashMap.newKeySet<String>()
     private val _items = MutableStateFlow<List<DownloadItem>>(emptyList())
     val items: StateFlow<List<DownloadItem>> = _items.asStateFlow()
-    @Volatile private var maxConcurrent = 4
+    private val _thermalStatus = MutableStateFlow("Thermal guard: checking device")
+    val thermalStatus: StateFlow<String> = _thermalStatus.asStateFlow()
+    @Volatile private var maxConcurrent = 1
+    @Volatile private var currentThermalStatus = 0
     @Volatile private var initialized = false
 
     fun initialize(context: Context) {
@@ -42,6 +55,7 @@ object DownloadCoordinator {
         maxConcurrent = QueueStore.maxConcurrent(appContext)
         _items.value = QueueStore.load(appContext)
         initialized = true
+        registerThermalGuard()
         scope.launch {
             val inFlight = _items.value.filter { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED) }
             inFlight.forEach { item ->
@@ -51,12 +65,53 @@ object DownloadCoordinator {
                     monitor.start()
                 }
             }
+            if (currentThermalStatus >= THERMAL_STOP_THRESHOLD) pauseActiveForThermal()
             pump()
         }
     }
 
+    private fun registerThermalGuard() {
+        if (Build.VERSION.SDK_INT < 29) {
+            _thermalStatus.value = "Thermal sensor API unavailable; single-download limit remains active."
+            return
+        }
+        runCatching {
+            val manager = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+            currentThermalStatus = manager.currentThermalStatus
+            updateThermalLabel(currentThermalStatus)
+            manager.addThermalStatusListener(appContext.mainExecutor) { status ->
+                currentThermalStatus = status
+                updateThermalLabel(status)
+                if (status >= THERMAL_STOP_THRESHOLD) pauseActiveForThermal()
+                pump()
+            }
+        }.onFailure { _thermalStatus.value = "Thermal status unavailable; single-download limit remains active." }
+    }
+
+    private fun updateThermalLabel(status: Int) {
+        val label = when (status) {
+            0 -> "Normal"
+            1 -> "Light — downloads allowed"
+            2 -> "Moderate — waiting jobs are held"
+            3 -> "Severe — active task stopped safely"
+            4 -> "Critical — downloads are stopped"
+            5 -> "Emergency — downloads are stopped"
+            else -> "Thermal shutdown state — downloads are stopped"
+        }
+        _thermalStatus.value = "Android thermal guard: " + label
+    }
+
+    private fun pauseActiveForThermal() {
+        _items.value.filter { it.id in active.keys && it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }.forEach { item ->
+            if (thermalDeferred.add(item.id)) {
+                update(item.id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Paused automatically because the device is too warm. It will resume after cooling.") }
+                signal(item.id, "INT")
+            }
+        }
+    }
+
     fun setMaxConcurrent(value: Int) {
-        maxConcurrent = value.coerceIn(1, 8)
+        maxConcurrent = value.coerceIn(1, 2)
         QueueStore.setMaxConcurrent(appContext, maxConcurrent)
         pump()
     }
@@ -88,7 +143,11 @@ object DownloadCoordinator {
     fun resume(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
         if (item.status != DownloadStatus.PAUSED) return
-        update(id) { it.copy(status = DownloadStatus.DOWNLOADING, speed = "Resuming…") }
+        if (currentThermalStatus >= THERMAL_DEFER_THRESHOLD) {
+            update(id) { it.copy(error = "Resume is temporarily blocked until the device cools down.") }
+            return
+        }
+        update(id) { it.copy(status = DownloadStatus.DOWNLOADING, speed = "Resuming…", error = "") }
         signal(id, "CONT")
     }
 
@@ -101,10 +160,8 @@ object DownloadCoordinator {
         if (running) {
             cancelled.add(id)
             signal(id, "INT")
-        } else {
-            // Queued/completed/failed items have no worker that could clear this flag.
-            cancelled.remove(id)
-        }
+        } else cancelled.remove(id)
+        thermalDeferred.remove(id)
         update(id) {
             it.copy(status = DownloadStatus.STOPPED, speed = "—", eta = "—", error = "Stopped by user")
         }
@@ -150,9 +207,10 @@ object DownloadCoordinator {
 
     private fun pump() {
         if (!initialized || StorageAccess.destinationPath(appContext).isNullOrBlank()) return
+        if (currentThermalStatus >= THERMAL_DEFER_THRESHOLD) return
         scope.launch {
             mutex.withLock {
-                while (active.size < maxConcurrent) {
+                while (active.size < maxConcurrent && currentThermalStatus < THERMAL_DEFER_THRESHOLD) {
                     val next = _items.value.firstOrNull { it.status == DownloadStatus.QUEUED && it.id !in active.keys } ?: break
                     val worker = scope.launch(start = CoroutineStart.LAZY) { runJob(next) }
                     active[next.id] = worker
@@ -178,6 +236,10 @@ object DownloadCoordinator {
                 update(id) { it.copy(status = DownloadStatus.FAILED, error = "Grant Download Studio the 'Run commands in Termux' permission in Android Settings.") }
                 return
             }
+            if (currentThermalStatus >= THERMAL_DEFER_THRESHOLD) {
+                update(id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Waiting for the device to cool before starting.") }
+                return
+            }
             update(id) { it.copy(status = DownloadStatus.STARTING, progress = 0f, speed = "Starting…", eta = "—", error = "") }
             val script = TermuxBridge.downloadScript(id, original.url, original.mode.name, destination)
             val launch = TermuxBridge.runShell(appContext, script, "Download Studio · ${original.mode.name.lowercase()}", true)
@@ -187,20 +249,31 @@ object DownloadCoordinator {
             }
 
             var lastLog = ""
-            val launchTime = System.currentTimeMillis()
-            while (true) {
+            val startAt = SystemClock.elapsedRealtime()
+            var lastActivityAt = startAt
+            var sawPid = false
+            var stopReason = ""
+            while (SystemClock.elapsedRealtime() - startAt < MAX_DOWNLOAD_RUNTIME_MS) {
                 val current = _items.value.firstOrNull { it.id == id } ?: break
                 if (current.status == DownloadStatus.STOPPED || id in cancelled) break
-                val log = StorageAccess.readState(appContext, "DownloadStudioState/$id.log").orEmpty()
+                if (current.status == DownloadStatus.PAUSED) {
+                    lastActivityAt = SystemClock.elapsedRealtime()
+                    delay(MONITOR_INTERVAL_MS * 2)
+                    continue
+                }
+                val log = StorageAccess.readStateTail(appContext, "DownloadStudioState/$id.log").orEmpty()
                 if (log != lastLog) {
                     lastLog = log
+                    lastActivityAt = SystemClock.elapsedRealtime()
                     parseProgress(id, log)
                 }
                 val exit = StorageAccess.readState(appContext, "DownloadStudioState/$id.exit")?.trim()
                 if (!exit.isNullOrBlank()) {
                     val code = exit.toIntOrNull() ?: 1
                     if (id in cancelled || _items.value.firstOrNull { it.id == id }?.status == DownloadStatus.STOPPED) break
-                    if (code == 0) {
+                    if (id in thermalDeferred) {
+                        update(id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Paused automatically because the device was too warm. It will resume after cooling.") }
+                    } else if (code == 0) {
                         val path = log.lineSequence().lastOrNull { it.startsWith("DS_COMPLETE:") }?.substringAfter("DS_COMPLETE:")?.trim().orEmpty()
                         update(id) {
                             it.copy(status = DownloadStatus.COMPLETED, progress = 1f, speed = "—", eta = "—",
@@ -216,18 +289,33 @@ object DownloadCoordinator {
                     break
                 }
                 val pid = StorageAccess.readState(appContext, "DownloadStudioState/$id.pid")?.trim().orEmpty()
-                if (pid.isBlank() && log.isBlank() && System.currentTimeMillis() - launchTime > 20_000) {
-                    update(id) {
-                        it.copy(
-                            status = DownloadStatus.FAILED,
-                            speed = "—",
-                            eta = "—",
-                            error = "Termux did not start the download command. Confirm allow-external-apps=true, grant Run commands in Termux permission, and rerun the Termux storage setup."
-                        )
+                if (pid.isNotBlank()) sawPid = true
+                val now = SystemClock.elapsedRealtime()
+                if (!sawPid && now - startAt > START_TIMEOUT_MS) {
+                    if (id in thermalDeferred) {
+                        update(id) { it.copy(status = DownloadStatus.QUEUED, error = "Waiting for the device to cool before resuming.") }
+                    } else {
+                        stopReason = "Termux did not start the download within 30 seconds. Check the Termux command permission and setup."
                     }
                     break
                 }
-                delay(900)
+                if (now - lastActivityAt > STALL_TIMEOUT_MS) {
+                    stopReason = "Download stopped because there was no activity for 15 minutes. You can retry it."
+                    break
+                }
+                if (currentThermalStatus >= THERMAL_STOP_THRESHOLD && thermalDeferred.add(id)) {
+                    update(id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Paused automatically because the device was too warm. It will resume after cooling.") }
+                    signal(id, "INT")
+                }
+                delay(MONITOR_INTERVAL_MS)
+            }
+            if (stopReason.isBlank() && SystemClock.elapsedRealtime() - startAt >= MAX_DOWNLOAD_RUNTIME_MS) {
+                stopReason = "Download stopped at the six-hour safety limit. You can retry it."
+            }
+            if (stopReason.isNotBlank()) {
+                signal(id, "INT")
+                if (id !in thermalDeferred) update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = stopReason) }
+            }
             }
         } catch (e: Exception) {
             if (id !in cancelled) update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", error = e.message ?: "Download failed") }
@@ -243,18 +331,31 @@ object DownloadCoordinator {
     private suspend fun monitorExisting(item: DownloadItem) {
         val id = item.id
         try {
-            val startTime = System.currentTimeMillis()
+            val startAt = SystemClock.elapsedRealtime()
+            var lastActivityAt = startAt
+            var lastLog = ""
             val logPath = "DownloadStudioState/$id.log"
             val pidPath = "DownloadStudioState/$id.pid"
-            while (true) {
+            while (SystemClock.elapsedRealtime() - startAt < MAX_DOWNLOAD_RUNTIME_MS) {
                 val current = _items.value.firstOrNull { it.id == id } ?: break
-                if (current.status == DownloadStatus.STOPPED) break
-                val log = StorageAccess.readState(appContext, logPath).orEmpty()
-                if (log.isNotBlank()) parseProgress(id, log)
+                if (current.status == DownloadStatus.STOPPED || id in cancelled) break
+                if (current.status == DownloadStatus.PAUSED) {
+                    lastActivityAt = SystemClock.elapsedRealtime()
+                    delay(MONITOR_INTERVAL_MS * 2)
+                    continue
+                }
+                val log = StorageAccess.readStateTail(appContext, logPath).orEmpty()
+                if (log != lastLog) {
+                    lastLog = log
+                    lastActivityAt = SystemClock.elapsedRealtime()
+                    parseProgress(id, log)
+                }
                 val exit = StorageAccess.readState(appContext, "DownloadStudioState/$id.exit")?.trim()
                 if (!exit.isNullOrBlank()) {
                     val code = exit.toIntOrNull() ?: 1
-                    if (code == 0) {
+                    if (id in thermalDeferred) {
+                        update(id) { it.copy(status = DownloadStatus.QUEUED, error = "Paused automatically because the device was too warm. It will resume after cooling.") }
+                    } else if (code == 0) {
                         val path = log.lineSequence().lastOrNull { it.startsWith("DS_COMPLETE:") }?.substringAfter("DS_COMPLETE:")?.trim().orEmpty()
                         update(id) { it.copy(status = DownloadStatus.COMPLETED, progress = 1f, speed = "—", eta = "—", downloaded = "Complete", outputPath = path, error = "") }
                     } else {
@@ -263,20 +364,32 @@ object DownloadCoordinator {
                     break
                 }
                 val pid = StorageAccess.readState(appContext, pidPath)?.trim().orEmpty()
-                if (pid.isBlank() && log.isBlank() && System.currentTimeMillis() - startTime > 12_000) {
-                    update(id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Previous download did not start; it has been returned to the queue.") }
+                val now = SystemClock.elapsedRealtime()
+                if (pid.isBlank() && now - startAt > START_TIMEOUT_MS) {
+                    update(id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Previous download was not running; returned to the queue.") }
                     break
                 }
-                delay(1000)
+                if (now - lastActivityAt > STALL_TIMEOUT_MS) {
+                    signal(id, "INT")
+                    update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = "Download monitoring detected no activity for 15 minutes. Retry when ready.") }
+                    break
+                }
+                delay(MONITOR_INTERVAL_MS)
+            }
+            if (SystemClock.elapsedRealtime() - startAt >= MAX_DOWNLOAD_RUNTIME_MS) {
+                signal(id, "INT")
+                update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = "Download stopped at the six-hour safety limit.") }
             }
         } finally {
             active.remove(id)
+            thermalDeferred.remove(id)
             persist()
             pump()
         }
     }
 
     private fun parseProgress(id: String, log: String) {
+        if (id in thermalDeferred) return
         val line = log.lineSequence().lastOrNull { it.startsWith("DS_PROGRESS|") } ?: return
         val parts = line.split('|')
         if (parts.size < 6) return
@@ -285,7 +398,7 @@ object DownloadCoordinator {
         val eta = parts[3].trim().ifBlank { "—" }
         val downloaded = humanBytes(parts[4].trim().toLongOrNull() ?: 0L)
         update(id) { current ->
-            if (current.status == DownloadStatus.PAUSED || current.status == DownloadStatus.STOPPED) current
+            if (current.status == DownloadStatus.PAUSED || current.status == DownloadStatus.STOPPED || current.status == DownloadStatus.QUEUED)
             else current.copy(status = DownloadStatus.DOWNLOADING, progress = percent, speed = speed, eta = eta, downloaded = downloaded)
         }
     }
