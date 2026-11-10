@@ -45,6 +45,7 @@ import com.downloadstudio.android.engine.DownloadCoordinator
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.util.Locale
 
 private val Ink = Color(0xFF090E19)
@@ -121,7 +122,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
             TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context))
     }
     LaunchedEffect(Unit) {
-        while (true) {
+        while (isActive) {
             setupReady = StorageAccess.isDownloadLocationConfigured(context) &&
                 TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context)
             if (!setupReady) tab = AppTab.SETTINGS
@@ -726,7 +727,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
         }
     }
     LaunchedEffect(Unit) {
-        while (true) {
+        while (isActive) {
             termuxInstalled = TermuxBridge.isInstalled(context)
             termuxPermission = TermuxBridge.hasRunPermission(context)
             treeGranted = StorageAccess.isDownloadLocationConfigured(context)
