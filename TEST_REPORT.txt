@@ -1,22 +1,18 @@
-DOWNLOAD STUDIO ANDROID v0.1.3 — SOURCE VALIDATION
+DOWNLOAD STUDIO ANDROID v0.1.4 — SOURCE VALIDATION
 
 Changes:
-- Removed floating overlay service and associated SYSTEM_ALERT_WINDOW, Usage Access, and foreground-service permissions.
-- Registered ACTION_SEND text/plain for YouTube shared URLs; the app asks Video or Audio after receiving the URL.
-- Added YouTube thumbnail previews and visible VIDEO/AUDIO type labels to the shared queue/library row component.
-- Set concurrency to one by default and maximum two; yt-dlp concurrent fragments limited to one.
-- Added Android thermal status guard (API 29+): hold new jobs at MODERATE and interrupt/requeue active work at SEVERE+ until the phone cools.
-- Added two-second monitor interval, tail-only log reads, 15-minute inactivity timeout and six-hour maximum runtime.
-- Added a sleep-based Termux watchdog so inactivity/runtime limits continue while yt-dlp is running outside the app UI.
-- Replaced perpetual Settings polling with a bounded 15-second engine check.
-- Added YouTube thumbnail fallback and updated developer credit/version 0.1.3.
+- Consolidated Queue and Library into one Downloads destination; persisted download records are retained.
+- Added name search, A–Z and Z–A sorting, newest and oldest download-date sorting, and All/Video/Audio filters.
+- Added completion timestamp persistence for new completions; legacy records without a completion timestamp use their creation date as a fallback.
+- Added yt-dlp DS_TITLE metadata output and updates the persisted item title from the real media title.
+- Existing generic Shared media entries use their output filename as a visible title fallback where possible.
+- Completed row taps resolve the file within the user's selected SAF folder and launch Android ACTION_VIEW with a detected MIME type and temporary read permission.
+- Active/queued/failed rows continue to open their details and controls.
+- Version bumped to 0.1.4 / version code 5.
 
-Static validation: included in GitHub Actions; pending new run.
-Kotlin syntax scan: pending remote build. Full Android compilation requires Gradle and Android SDK.
-Physical-device tests: not yet performed. Validate thermal pause/resume, Share-sheet routing, thumbnail display and a long-running paused download on the target Samsung phone.
+Static source checks are included in GitHub Actions. APK compilation is not claimed until the workflow succeeds.
+Physical device tests still required for all four sort options, search, category filters, YouTube title metadata, legacy-title fallback, and opening MP4/MP3 files with installed default apps.
 
-Limitations:
-- No software can guarantee zero device heating. FFmpeg and yt-dlp still use CPU, battery, storage and network when downloading/processing.
-- Android thermal status is available through the public API on Android 10+; OEM reporting varies. Older Android versions rely on the one-download default and two-download cap.
-- Download Studio registers as a share target but cannot force Samsung/Android to rank it first.
-- Static validation is not an APK malware scan or certification.
+Existing thermal and runaway safeguards are retained: one download by default, two maximum, one yt-dlp fragment, Android thermal-status guard, 15-minute inactivity timeout, six-hour maximum runtime, tail-only log reads, and bounded Termux watchdog.
+
+Limitations: no software can guarantee zero device heating; Android file opening depends on installed compatible apps and SAF permission grants; legacy download completion dates were not recorded historically.
