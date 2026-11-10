@@ -95,15 +95,7 @@ class MainActivity : ComponentActivity() {
             else -> null
         } ?: return
         val url = Regex("https?://[^\\s<>\\\"]+", RegexOption.IGNORE_CASE).find(raw)?.value?.trimEnd('.', ',', ')', ']') ?: return
-        val mode = QueueStore.pendingMode(this)
-        if (mode != null) {
-            QueueStore.setPendingMode(this, null)
-            runCatching { DownloadCoordinator.enqueue(url, mode, "YouTube share") }
-                .onFailure { Toast.makeText(this, it.message ?: "Could not add link", Toast.LENGTH_LONG).show() }
-            Toast.makeText(this, if (mode == DownloadMode.VIDEO) "Video added to queue" else "Audio added to queue", Toast.LENGTH_SHORT).show()
-        } else {
-            pendingSharedUrl = url
-        }
+        pendingSharedUrl = url
     }
 
     companion object {

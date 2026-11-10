@@ -10,7 +10,6 @@ object QueueStore {
     private const val KEY_TREE_URI = "destination_tree_uri"
     private const val KEY_BASE_PATH = "destination_base_path"
     private const val KEY_MAX = "max_concurrent"
-    private const val KEY_PENDING_MODE = "pending_share_mode"
 
     fun load(context: Context): List<DownloadItem> = runCatching {
         val raw = prefs(context).getString(KEY_QUEUE, "[]") ?: "[]"
@@ -57,8 +56,6 @@ object QueueStore {
         return if (stored in 1..2) stored else 1
     }
     fun setMaxConcurrent(context: Context, value: Int) = prefs(context).edit().putInt(KEY_MAX, value.coerceIn(1, 2)).apply()
-    fun pendingMode(context: Context): DownloadMode? = prefs(context).getString(KEY_PENDING_MODE, null)?.let { runCatching { DownloadMode.valueOf(it) }.getOrNull() }
-    fun setPendingMode(context: Context, mode: DownloadMode?) = prefs(context).edit().putString(KEY_PENDING_MODE, mode?.name).apply()
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }
