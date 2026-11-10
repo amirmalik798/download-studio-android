@@ -26,7 +26,8 @@ object QueueStore {
                     downloaded = o.optString("downloaded", "—"), format = o.optString("format", ""),
                     outputPath = o.optString("outputPath", ""), error = o.optString("error", ""),
                     createdAt = o.optLong("createdAt", System.currentTimeMillis()),
-                    completedAt = o.optLong("completedAt", 0L)
+                    completedAt = o.optLong("completedAt", 0L),
+                    thumbnailUrl = o.optString("thumbnailUrl", "")
                 )
                 // Keep in-flight status: DownloadCoordinator reconnects to the Termux
                 // log/exit files rather than starting a duplicate process on app restart.
@@ -43,7 +44,7 @@ object QueueStore {
                 put("mode", item.mode.name); put("status", item.status.name)
                 put("progress", item.progress.toDouble()); put("speed", item.speed); put("eta", item.eta)
                 put("downloaded", item.downloaded); put("format", item.format)
-                put("outputPath", item.outputPath); put("error", item.error); put("createdAt", item.createdAt); put("completedAt", item.completedAt)
+                put("outputPath", item.outputPath); put("error", item.error); put("createdAt", item.createdAt); put("completedAt", item.completedAt); put("thumbnailUrl", item.thumbnailUrl)
             })
         }
         prefs(context).edit().putString(KEY_QUEUE, array.toString()).apply()
