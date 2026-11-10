@@ -33,7 +33,7 @@ def main() -> int:
     require("youtubeThumbnailUrl" in main_activity and "VIDEO" in main_activity and "AUDIO" in main_activity, "Thumbnail/type labels missing")
     require("ShareFeatureCard" in main_activity and "YOUTUBE FLOATING CONTROLS" not in main_activity, "Share-first UI or floating removal missing")
     require("floatingEnabled" not in main_activity and "pendingMode" not in main_activity, "Legacy floating-control state remains")
-    require(any(node.attrib.get(f"{{{ANDROID_NS}}}name") == "android.intent.action.SEND" for node in (node for node in manifest.iter() if node.tag.endswith("}action"))), "ACTION_SEND share target missing")
+    require(any(node.attrib.get(f"{{{ANDROID_NS}}}name") == "android.intent.action.SEND" for node in (node for node in manifest.iter() if node.tag == "action")), "ACTION_SEND share target missing")
     require(not (ROOT / "app/src/main/java/com/downloadstudio/android/service/OverlayService.kt").exists(), "Floating overlay source still exists")
     require('getInt(KEY_MAX, 1)' in queue_store and "coerceIn(1, 2)" in queue_store, "Queue concurrency default/range not conservative")
     require("maxConcurrent = 1" in coordinator and "value.coerceIn(1, 2)" in coordinator, "Coordinator concurrency limit missing")
