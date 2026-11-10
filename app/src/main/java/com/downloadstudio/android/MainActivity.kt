@@ -331,7 +331,7 @@ private enum class DownloadSort(val label: String) {
     DATE_OLDEST("Date · Oldest first")
 }
 
-private enum class DownloadFilter { ALL, VIDEO, AUDIO }
+private enum class DownloadFilter { ALL, VIDEO, AUDIO, DOWNLOADING, DOWNLOADED }
 
 @Composable
 private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem) -> Unit) {
@@ -339,6 +339,8 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
     var filter by remember { mutableStateOf(DownloadFilter.ALL) }
     var sort by remember { mutableStateOf(DownloadSort.DATE_NEWEST) }
     var sortExpanded by remember { mutableStateOf(false) }
+    var toolsExpanded by remember { mutableStateOf(false) }
+    var showClearConfirmation by remember { mutableStateOf(false) }
     val active = items.count { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }
     val visibleItems = remember(items, search, filter, sort) {
         val matches = items.filter { item ->
@@ -346,6 +348,8 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 DownloadFilter.ALL -> true
                 DownloadFilter.VIDEO -> item.mode == DownloadMode.VIDEO
                 DownloadFilter.AUDIO -> item.mode == DownloadMode.AUDIO
+                DownloadFilter.DOWNLOADING -> item.status in setOf(DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)
+                DownloadFilter.DOWNLOADED -> item.status == DownloadStatus.COMPLETED
             }
             categoryMatches && displayTitle(item).contains(search.trim(), ignoreCase = true)
         }
@@ -364,47 +368,54 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 Text("${items.size} items · $active active · ${items.count { it.status == DownloadStatus.COMPLETED }} completed", color = TextMuted, fontSize = 11.sp)
             }
             Text("${visibleItems.size}", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            IconButton(onClick = { toolsExpanded = !toolsExpanded }) {
+                Icon(if (toolsExpanded) Icons.Default.Close else Icons.Default.Search, "Search and filters", tint = Cyan)
+            }
+            IconButton(onClick = { showClearConfirmation = true }, enabled = items.isNotEmpty()) {
+                Icon(Icons.Default.DeleteSweep, "Clear downloads list", tint = if (items.isNotEmpty()) Red else TextMuted)
+            }
         }
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = search,
-            onValueChange = { search = it },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Search by name", color = TextMuted) },
-            leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
-            trailingIcon = {
-                if (search.isNotBlank()) IconButton(onClick = { search = "" }) { Icon(Icons.Default.Close, "Clear search", tint = TextMuted) }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = TextMain, unfocusedTextColor = TextMain,
-                focusedBorderColor = Blue, unfocusedBorderColor = Line,
-                cursorColor = Cyan, focusedContainerColor = Color(0xFF0C1525), unfocusedContainerColor = Color(0xFF0C1525)
-            )
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-            FilterChip(selected = filter == DownloadFilter.ALL, onClick = { filter = DownloadFilter.ALL }, label = { Text("All") })
-            FilterChip(selected = filter == DownloadFilter.VIDEO, onClick = { filter = DownloadFilter.VIDEO }, label = { Text("Video") })
-            FilterChip(selected = filter == DownloadFilter.AUDIO, onClick = { filter = DownloadFilter.AUDIO }, label = { Text("Audio") })
-        }
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text("SORT BY", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
-            Spacer(Modifier.weight(1f))
-            Box {
-                TextButton(onClick = { sortExpanded = true }) {
-                    Icon(Icons.Default.Sort, null, tint = Cyan, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text(sort.label, color = Cyan, fontSize = 11.sp)
-                    Icon(Icons.Default.ArrowDropDown, null, tint = Cyan)
+        AnimatedVisibility(visible = toolsExpanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = search, onValueChange = { search = it }, modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Search by name", color = TextMuted) },
+                    leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
+                    trailingIcon = { if (search.isNotBlank()) IconButton(onClick = { search = "" }) { Icon(Icons.Default.Close, "Clear search", tint = TextMuted) } },
+                    singleLine = true, shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = TextMain, unfocusedTextColor = TextMain,
+                        focusedBorderColor = Blue, unfocusedBorderColor = Line, cursorColor = Cyan,
+                        focusedContainerColor = Color(0xFF0C1525), unfocusedContainerColor = Color(0xFF0C1525)))
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(selected = filter == DownloadFilter.ALL, onClick = { filter = DownloadFilter.ALL }, label = { Text("All") })
+                    FilterChip(selected = filter == DownloadFilter.VIDEO, onClick = { filter = DownloadFilter.VIDEO }, label = { Text("Video") })
+                    FilterChip(selected = filter == DownloadFilter.AUDIO, onClick = { filter = DownloadFilter.AUDIO }, label = { Text("Audio") })
                 }
-                DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
-                    DownloadSort.values().forEach { option ->
-                        DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortExpanded = false })
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(selected = filter == DownloadFilter.DOWNLOADING, onClick = { filter = DownloadFilter.DOWNLOADING }, label = { Text("Downloading") })
+                    FilterChip(selected = filter == DownloadFilter.DOWNLOADED, onClick = { filter = DownloadFilter.DOWNLOADED }, label = { Text("Downloaded") })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("SORT BY", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
+                    Spacer(Modifier.weight(1f))
+                    Box {
+                        TextButton(onClick = { sortExpanded = true }) {
+                            Icon(Icons.Default.Sort, null, tint = Cyan, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(5.dp)); Text(sort.label, color = Cyan, fontSize = 11.sp)
+                            Icon(Icons.Default.ArrowDropDown, null, tint = Cyan)
+                        }
+                        DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
+                            DownloadSort.values().forEach { option -> DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortExpanded = false }) }
+                        }
                     }
                 }
             }
+        }
+        if (showClearConfirmation) {
+            AlertDialog(onDismissRequest = { showClearConfirmation = false }, containerColor = Panel,
+                title = { Text("Clear downloads list?", color = TextMain) },
+                text = { Text("This removes download records and stops active jobs. Files already saved on your device will not be deleted.", color = TextMuted) },
+                confirmButton = { TextButton(onClick = { DownloadCoordinator.clearAll(); showClearConfirmation = false }) { Text("Clear list", color = Red) } },
+                dismissButton = { TextButton(onClick = { showClearConfirmation = false }) { Text("Cancel") } })
         }
         Spacer(Modifier.height(5.dp))
         when {
@@ -433,7 +444,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
     ) {
         Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                val thumbnailUrl = youtubeThumbnailUrl(item.url)
+                val thumbnailUrl = item.thumbnailUrl.takeIf { it.isNotBlank() } ?: youtubeThumbnailUrl(item.url)
                 var thumbnailFailed by remember(item.id, thumbnailUrl) { mutableStateOf(false) }
                 Box(Modifier.size(width = 92.dp, height = 58.dp).clip(RoundedCornerShape(10.dp)).background(if (item.mode == DownloadMode.VIDEO) Blue.copy(alpha = .15f) else Green.copy(alpha = .15f)), contentAlignment = Alignment.Center) {
                     if (thumbnailUrl != null && !thumbnailFailed) {
@@ -454,6 +465,17 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
                 }
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
                     Text(item.status.name.lowercase().replaceFirstChar { it.titlecase(Locale.getDefault()) }, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                }
+                var actionsExpanded by remember(item.id) { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { actionsExpanded = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.MoreVert, "Download actions", tint = TextMuted)
+                    }
+                    DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
+                        DropdownMenuItem(text = { Text("Remove from downloads") },
+                            leadingIcon = { Icon(Icons.Default.RemoveCircleOutline, null) },
+                            onClick = { actionsExpanded = false; DownloadCoordinator.remove(item.id) })
+                    }
                 }
             }
             if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED)) {
