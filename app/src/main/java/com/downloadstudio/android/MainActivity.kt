@@ -196,7 +196,17 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { onIncomingUrl(shared, mode); shareUrl = null; tab = AppTab.DOWNLOADS }) { Text("Add download") }
+                TextButton(onClick = {
+                    if (setupReady) {
+                        onIncomingUrl(shared, mode)
+                        shareUrl = null
+                        tab = AppTab.DOWNLOADS
+                    } else {
+                        shareUrl = null
+                        tab = AppTab.SETTINGS
+                        Toast.makeText(context, "Complete the required setup before adding downloads.", Toast.LENGTH_LONG).show()
+                    }
+                }) { Text(if (setupReady) "Add download" else "Complete setup first") }
             },
             dismissButton = { TextButton(onClick = { shareUrl = null }) { Text("Cancel") } }
         )
