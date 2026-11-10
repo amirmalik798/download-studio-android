@@ -2,7 +2,7 @@
 set -e
 pkg update -y
 pkg upgrade -y
-pkg install -y python ffmpeg coreutils
+pkg install -y python ffmpeg coreutils procps
 python -m pip install -U "yt-dlp[default]"
 termux-setup-storage
 printf '\nTermux setup completed. Approve the storage permission if Android asks.\n'

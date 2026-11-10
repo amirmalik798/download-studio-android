@@ -41,7 +41,7 @@ def main() -> int:
     require("while (true)" not in coordinator and "while (true)" not in main_activity, "Unbounded polling loop remains")
     require("--concurrent-fragments 1" in termux, "yt-dlp fragment concurrency limit missing")
     require("ds_watch_ticks" in termux and "-lt 360" in termux and "sleep 60" in termux, "Termux bounded watchdog missing")
-    require("pkg install -y python ffmpeg coreutils" in termux, "Termux coreutils package missing")
+    require("pkg install -y python ffmpeg coreutils procps" in termux, "Termux coreutils/procps packages missing")
     require("com.termux.RUN_COMMAND" in termux and 'python -m pip install -U' in termux, "Termux command/install integration missing")
     require(any((ROOT / ".github/workflows" / name).is_file() for name in ("main.yml", "build-apk.yml")), "GitHub Actions workflow missing")
     print("PASS: manifest XML and permissions (no overlay/Usage Access)")

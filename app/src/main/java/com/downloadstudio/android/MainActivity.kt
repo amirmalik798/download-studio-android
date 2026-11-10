@@ -265,7 +265,7 @@ private fun HomeScreen(
             }
         }
         if (items.isEmpty()) {
-            item { EmptyState("Nothing downloading yet", "Paste a link above or open YouTube and use the floating Download Studio controls.", Icons.Default.VideoLibrary) }
+            item { EmptyState("Nothing downloading yet", "Paste a link above, or open YouTube → Share → Download Studio.", Icons.Default.VideoLibrary) }
         } else {
             lazyItems(items.sortedByDescending { it.createdAt }.take(3), key = { it.id }) { item -> DownloadRow(item, onClick = { onOpenItem(item) }) }
         }
@@ -417,7 +417,6 @@ private fun SettingsScreen() {
     var basePath by remember { mutableStateOf(QueueStore.basePath(context).orEmpty()) }
     var treeGranted by remember { mutableStateOf(!QueueStore.treeUri(context).isNullOrBlank()) }
     var maxConcurrent by remember { mutableIntStateOf(QueueStore.maxConcurrent(context)) }
-    var floating by remember { mutableStateOf(QueueStore.floatingEnabled(context)) }
     var termuxInstalled by remember { mutableStateOf(TermuxBridge.isInstalled(context)) }
     var termuxPermission by remember { mutableStateOf(TermuxBridge.hasRunPermission(context)) }
     var engineStatus by remember { mutableStateOf("Not checked") }

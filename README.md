@@ -48,7 +48,7 @@ These safeguards reduce unnecessary work, but **no software can guarantee zero d
 
    ```bash
    pkg update -y && pkg upgrade -y
-   pkg install -y python ffmpeg coreutils
+   pkg install -y python ffmpeg coreutils procps
    python -m pip install -U "yt-dlp[default]"
    termux-setup-storage
    ```

@@ -41,7 +41,7 @@ object TermuxBridge {
 
     fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
-    fun setupScript(): String = "pkg update -y && pkg upgrade -y && pkg install -y python ffmpeg coreutils && python -m pip install -U \"yt-dlp[default]\" && termux-setup-storage"
+    fun setupScript(): String = "pkg update -y && pkg upgrade -y && pkg install -y python ffmpeg coreutils procps && python -m pip install -U \"yt-dlp[default]\" && termux-setup-storage"
 
     fun engineCheckScript(destination: String): String {
         val state = "${destination.trimEnd('/')}/DownloadStudioState"
