@@ -240,6 +240,9 @@ object DownloadCoordinator {
                 update(id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Waiting for the device to cool before starting.") }
                 return
             }
+            // The previous attempt may have been interrupted by thermal protection.
+            // Clear that marker only after the thermal gate allows a real retry.
+            thermalDeferred.remove(id)
             update(id) { it.copy(status = DownloadStatus.STARTING, progress = 0f, speed = "Starting…", eta = "—", error = "") }
             val script = TermuxBridge.downloadScript(id, original.url, original.mode.name, destination)
             val launch = TermuxBridge.runShell(appContext, script, "Download Studio · ${original.mode.name.lowercase()}", true)
