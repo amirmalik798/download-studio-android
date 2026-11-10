@@ -1,0 +1,84 @@
+package com.downloadstudio.android.engine
+
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+
+object TermuxBridge {
+    const val TERMUX_PACKAGE = "com.termux"
+    private const val ACTION_RUN = "com.termux.RUN_COMMAND"
+    private const val EXTRA_PATH = "com.termux.RUN_COMMAND_PATH"
+    private const val EXTRA_ARGS = "com.termux.RUN_COMMAND_ARGUMENTS"
+    private const val EXTRA_WORKDIR = "com.termux.RUN_COMMAND_WORKDIR"
+    private const val EXTRA_BACKGROUND = "com.termux.RUN_COMMAND_BACKGROUND"
+    private const val EXTRA_LABEL = "com.termux.RUN_COMMAND_COMMAND_LABEL"
+    private const val EXTRA_DESCRIPTION = "com.termux.RUN_COMMAND_COMMAND_DESCRIPTION"
+
+    fun isInstalled(context: Context): Boolean = runCatching {
+        context.packageManager.getPackageInfo(TERMUX_PACKAGE, 0)
+        true
+    }.getOrDefault(false)
+
+    fun hasRunPermission(context: Context): Boolean =
+        context.checkSelfPermission("com.termux.permission.RUN_COMMAND") == PackageManager.PERMISSION_GRANTED
+
+    fun runShell(context: Context, script: String, label: String = "Download Studio", background: Boolean = true): Result<Unit> = runCatching {
+        check(isInstalled(context)) { "Termux is not installed. Install the official Termux app first." }
+        check(hasRunPermission(context)) { "Download Studio needs the 'Run commands in Termux' permission. Open Android Settings → Apps → Download Studio → Permissions → Additional permissions." }
+        val intent = Intent(ACTION_RUN).apply {
+            component = ComponentName(TERMUX_PACKAGE, "com.termux.app.RunCommandService")
+            putExtra(EXTRA_PATH, "/data/data/com.termux/files/usr/bin/bash")
+            putExtra(EXTRA_ARGS, arrayOf("-lc", script))
+            putExtra(EXTRA_WORKDIR, "/data/data/com.termux/files/home")
+            putExtra(EXTRA_BACKGROUND, background)
+            putExtra(EXTRA_LABEL, label)
+            putExtra(EXTRA_DESCRIPTION, "Requested by Download Studio")
+        }
+        context.startService(intent)
+        Unit
+    }
+
+    fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+
+    fun setupScript(): String = "pkg update -y && pkg upgrade -y && pkg install -y python ffmpeg && python -m pip install -U \"yt-dlp[default]\" && termux-setup-storage"
+
+    fun engineCheckScript(destination: String): String {
+        val state = "${destination.trimEnd('/')}/DownloadStudioState"
+        val report = "$state/engine.txt"
+        return "mkdir -p ${shellQuote(state)}; " +
+            "{ printf 'yt-dlp: '; yt-dlp --version 2>&1 || true; " +
+            "printf 'ffmpeg: '; ffmpeg -version 2>&1 | head -n 1 || true; } > ${shellQuote(report)}"
+    }
+
+    fun downloadScript(id: String, url: String, mode: String, destination: String): String {
+        val q = ::shellQuote
+        val stateDir = "$destination/DownloadStudioState"
+        val log = "$stateDir/$id.log"
+        val pid = "$stateDir/$id.pid"
+        val exit = "$stateDir/$id.exit"
+        val output = "$destination/%(title).200s-%(id)s.%(ext)s"
+        val common = "--newline --ignore-config --no-playlist --continue -o ${q(output)} " +
+            "--progress-template ${q("download:DS_PROGRESS|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes_estimate)s")} " +
+            "--print ${q("after_move:DS_COMPLETE:%(filepath)s")}"
+        val preset = if (mode == "AUDIO") {
+            "-f bestaudio --extract-audio --audio-quality 0 --audio-format mp3 --embed-thumbnail"
+        } else {
+            // Preset copied semantically from the supplied Media Downloader yt-dlp extension:
+            // best H.264/MP4 video + M4A audio, then progressively broader fallbacks.
+            "-f ${q("bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best")}"
+        }
+        return "mkdir -p ${q(destination)} ${q(stateDir)}; " +
+            "rm -f ${q(log)} ${q(exit)} ${q(pid)}; " +
+            "yt-dlp $common $preset ${q(url)} > ${q(log)} 2>&1 & " +
+            "ds_pid=\$!; printf '%s' \"\$ds_pid\" > ${q(pid)}; wait \"\$ds_pid\"; " +
+            "ds_code=\$?; printf '%s' \"\$ds_code\" > ${q(exit)}; exit \"\$ds_code\""
+    }
+
+    fun signalScript(destination: String, id: String, signal: String): String {
+        require(signal in setOf("STOP", "CONT", "INT", "TERM"))
+        val pidFile = "$destination/DownloadStudioState/$id.pid"
+        return "ds_n=0; while [ ! -f ${shellQuote(pidFile)} ] && [ \"\$ds_n\" -lt 20 ]; do sleep 0.25; ds_n=\$((ds_n+1)); done; " +
+            "if [ -f ${shellQuote(pidFile)} ]; then ds_pid=\$(cat ${shellQuote(pidFile)}); kill -$signal \"\$ds_pid\" 2>/dev/null || true; fi"
+    }
+}

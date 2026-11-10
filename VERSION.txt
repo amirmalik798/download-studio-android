@@ -1,0 +1,6 @@
+Download Studio for Android
+Version: 0.1.1
+Version code: 2
+Application ID: com.downloadstudio.android
+Minimum Android: 8.0 (API 26)
+Compile SDK: 36

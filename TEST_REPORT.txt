@@ -1,0 +1,27 @@
+Download Studio for Android — Source Validation Report
+Version: 0.1.1
+Date: 2026-11-10
+
+SOURCE-LEVEL CHECKS
+- AndroidManifest.xml parses as valid XML: PASS
+- Gradle plugin / Kotlin plugin / compile SDK values checked for internal consistency: PASS
+- Video format selector matches the supplied Media Downloader YouTube preset: PASS
+- Audio-to-MP3 selector matches the supplied Media Downloader preset: PASS
+- Reference yt-dlp defaults (--newline, --ignore-config, --no-playlist, output template) present: PASS
+- Termux Python/FFmpeg installation commands present: PASS
+- Termux RUN_COMMAND integration and manifest permission present: PASS
+- Default concurrency = 4 and configurable range 1–8: PASS
+- Concurrent queue state mutations are serialized: PASS
+- Termux command-start timeout/error reporting present: PASS
+- Overlay permission and YouTube foreground UsageStats integration present: PASS
+- GitHub Actions APK workflow present: PASS
+- GitHub Actions workflow YAML parses: PASS
+- Kotlin source parser scan: no syntax/"expecting" diagnostics found (type checking is not possible without Android/AndroidX classpaths)
+
+BUILD STATUS
+- APK compilation: NOT PERFORMED
+- Reason: Android SDK / android.jar / Build Tools / Gradle are not installed in the execution environment, and outbound DNS is unavailable to fetch them.
+- Device test: NOT PERFORMED
+
+IMPORTANT
+This is static source validation, not a successful Android Gradle build. No APK is included. Use Android Studio on Windows or the included GitHub Actions workflow to create a genuine APK, then test it on a physical Android device.
