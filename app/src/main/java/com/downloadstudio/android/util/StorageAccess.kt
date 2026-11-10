@@ -73,6 +73,10 @@ object StorageAccess {
         node.takeIf { it.exists() && it.isFile }
     }.getOrNull()
 
+    /** Resolve the parent directory of a completed download for file-manager intents. */
+    fun findDownloadedFolder(context: Context, outputPath: String): DocumentFile? =
+        findDownloadedDocument(context, outputPath)?.parentFile
+
     fun mimeTypeForFileName(fileName: String): String? = runCatching {
         val extension = fileName.substringAfterLast('.', "").lowercase()
         extension.takeIf { it.isNotBlank() }?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
