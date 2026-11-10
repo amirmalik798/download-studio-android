@@ -1,8 +1,10 @@
 package com.downloadstudio.android
 
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -508,6 +510,20 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                         Icon(Icons.Default.MoreVert, "Download actions", tint = TextMuted)
                     }
                     DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
+                        if (item.status == DownloadStatus.COMPLETED) {
+                            DropdownMenuItem(text = { Text("View in folder") },
+                                leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
+                                onClick = {
+                                    actionsExpanded = false
+                                    openDownloadedFolder(context, item)
+                                })
+                            DropdownMenuItem(text = { Text("Share file") },
+                                leadingIcon = { Icon(Icons.Default.Share, null) },
+                                onClick = {
+                                    actionsExpanded = false
+                                    shareDownloadedFile(context, item)
+                                })
+                        }
                         DropdownMenuItem(text = { Text("Remove from downloads") },
                             leadingIcon = { Icon(Icons.Default.RemoveCircleOutline, null) },
                             onClick = { actionsExpanded = false; onRemoveRequest?.invoke() })
@@ -528,6 +544,45 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                 Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best audio extracted to MP3", color = TextMuted, fontSize = 10.sp)
             }
         }
+    }
+}
+
+private fun openDownloadedFolder(context: android.content.Context, item: DownloadItem) {
+    val folder = StorageAccess.findDownloadedFolder(context, item.outputPath)
+    if (folder == null) {
+        Toast.makeText(context, "The download folder could not be found.", Toast.LENGTH_LONG).show()
+        return
+    }
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(folder.uri, DocumentsContract.Document.MIME_TYPE_DIR)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching { context.startActivity(intent) }
+        .onFailure {
+            Toast.makeText(context, "No file manager on this device can open this folder.", Toast.LENGTH_LONG).show()
+        }
+}
+
+private fun shareDownloadedFile(context: android.content.Context, item: DownloadItem) {
+    val document = StorageAccess.findDownloadedDocument(context, item.outputPath)
+    if (document == null) {
+        Toast.makeText(context, "The downloaded file could not be found.", Toast.LENGTH_LONG).show()
+        return
+    }
+    val mimeType = document.type
+        ?: StorageAccess.mimeTypeForFileName(document.name.orEmpty())
+        ?: "*/*"
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = mimeType
+        putExtra(Intent.EXTRA_STREAM, document.uri)
+        putExtra(Intent.EXTRA_SUBJECT, displayTitle(item))
+        clipData = ClipData.newUri(context.contentResolver, displayTitle(item), document.uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching {
+        context.startActivity(Intent.createChooser(shareIntent, "Share " + displayTitle(item)))
+    }.onFailure {
+        Toast.makeText(context, "No compatible app is available to share this file.", Toast.LENGTH_LONG).show()
     }
 }
 
