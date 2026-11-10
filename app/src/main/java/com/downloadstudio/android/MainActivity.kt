@@ -1,13 +1,9 @@
 package com.downloadstudio.android
 
-import android.app.AppOpsManager
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.view.View
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,10 +20,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import coil.compose.AsyncImage
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -37,14 +35,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.engine.DownloadCoordinator
 import com.downloadstudio.android.engine.TermuxBridge
-import com.downloadstudio.android.service.OverlayService
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -92,15 +88,6 @@ class MainActivity : ComponentActivity() {
         handleIncoming(intent)
     }
 
-    override fun onResume() {
-        super.onResume()
-        // Permission settings are external activities. Start the user-enabled overlay
-        // automatically when the user returns after granting both required permissions.
-        if (QueueStore.floatingEnabled(this) && Settings.canDrawOverlays(this) && hasUsageAccess(this)) {
-            startOverlayService(this)
-        }
-    }
-
     private fun handleIncoming(intent: Intent?) {
         val raw = when (intent?.action) {
             Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
@@ -108,15 +95,7 @@ class MainActivity : ComponentActivity() {
             else -> null
         } ?: return
         val url = Regex("https?://[^\\s<>\\\"]+", RegexOption.IGNORE_CASE).find(raw)?.value?.trimEnd('.', ',', ')', ']') ?: return
-        val mode = QueueStore.pendingMode(this)
-        if (mode != null) {
-            QueueStore.setPendingMode(this, null)
-            runCatching { DownloadCoordinator.enqueue(url, mode, "YouTube share") }
-                .onFailure { Toast.makeText(this, it.message ?: "Could not add link", Toast.LENGTH_LONG).show() }
-            Toast.makeText(this, if (mode == DownloadMode.VIDEO) "Video added to queue" else "Audio added to queue", Toast.LENGTH_SHORT).show()
-        } else {
-            pendingSharedUrl = url
-        }
+        pendingSharedUrl = url
     }
 
     companion object {
@@ -278,11 +257,11 @@ private fun HomeScreen(
             }
         }
         if (items.isEmpty()) {
-            item { EmptyState("Nothing downloading yet", "Paste a link above or open YouTube and use the floating Download Studio controls.", Icons.Default.VideoLibrary) }
+            item { EmptyState("Nothing downloading yet", "Paste a link above, or open YouTube → Share → Download Studio.", Icons.Default.VideoLibrary) }
         } else {
             lazyItems(items.sortedByDescending { it.createdAt }.take(3), key = { it.id }) { item -> DownloadRow(item, onClick = { onOpenItem(item) }) }
         }
-        item { FloatingFeatureCard() }
+        item { ShareFeatureCard() }
         item { Spacer(Modifier.height(8.dp)) }
     }
 }
@@ -315,17 +294,16 @@ private fun StatCard(label: String, value: String, icon: androidx.compose.ui.gra
 }
 
 @Composable
-private fun FloatingFeatureCard() {
+private fun ShareFeatureCard() {
     Card(colors = CardDefaults.cardColors(containerColor = Panel2), shape = RoundedCornerShape(18.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line)) {
         Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(Violet.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.PictureInPictureAlt, null, tint = Violet)
+                Icon(Icons.Default.Share, null, tint = Violet)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text("Floating video controls", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Text("Show two download actions while YouTube is open.", color = TextMuted, fontSize = 10.sp)
+                Text("Download from YouTube", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text("In YouTube, tap Share and choose Download Studio. Then select Video or Audio.", color = TextMuted, fontSize = 10.sp)
             }
-            Icon(Icons.Default.ChevronRight, null, tint = TextMuted)
         }
     }
 }
@@ -376,12 +354,24 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
     ) {
         Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(if (item.mode == DownloadMode.VIDEO) Blue.copy(alpha = .15f) else Green.copy(alpha = .15f)), contentAlignment = Alignment.Center) {
-                    Icon(if (item.mode == DownloadMode.VIDEO) Icons.Default.PlayCircle else Icons.Default.MusicNote, null, tint = if (item.mode == DownloadMode.VIDEO) Blue else Green)
+                val thumbnailUrl = youtubeThumbnailUrl(item.url)
+                var thumbnailFailed by remember(item.id, thumbnailUrl) { mutableStateOf(false) }
+                Box(Modifier.size(width = 92.dp, height = 58.dp).clip(RoundedCornerShape(10.dp)).background(if (item.mode == DownloadMode.VIDEO) Blue.copy(alpha = .15f) else Green.copy(alpha = .15f)), contentAlignment = Alignment.Center) {
+                    if (thumbnailUrl != null && !thumbnailFailed) {
+                        AsyncImage(model = thumbnailUrl, contentDescription = "YouTube thumbnail", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(), onError = { thumbnailFailed = true })
+                    } else {
+                        Icon(if (item.mode == DownloadMode.VIDEO) Icons.Default.PlayCircle else Icons.Default.MusicNote, null, tint = if (item.mode == DownloadMode.VIDEO) Blue else Green)
+                    }
                 }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(item.title, color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(item.url.substringAfter("//").take(48), color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        val isVideo = item.mode == DownloadMode.VIDEO
+                        Box(Modifier.clip(CircleShape).background((if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
+                            Text(if (isVideo) "VIDEO" else "AUDIO", color = if (isVideo) Blue else Green, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Text(item.url.substringAfter("//").take(34), color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
                     Text(item.status.name.lowercase().replaceFirstChar { it.titlecase(Locale.getDefault()) }, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
@@ -419,7 +409,6 @@ private fun SettingsScreen() {
     var basePath by remember { mutableStateOf(QueueStore.basePath(context).orEmpty()) }
     var treeGranted by remember { mutableStateOf(!QueueStore.treeUri(context).isNullOrBlank()) }
     var maxConcurrent by remember { mutableIntStateOf(QueueStore.maxConcurrent(context)) }
-    var floating by remember { mutableStateOf(QueueStore.floatingEnabled(context)) }
     var termuxInstalled by remember { mutableStateOf(TermuxBridge.isInstalled(context)) }
     var termuxPermission by remember { mutableStateOf(TermuxBridge.hasRunPermission(context)) }
     var engineStatus by remember { mutableStateOf("Not checked") }
@@ -459,16 +448,24 @@ private fun SettingsScreen() {
             }
         }
         item {
-            SettingsCard("DOWNLOAD CAPACITY", "Choose how many yt-dlp tasks may run at the same time.") {
+            SettingsCard("DOWNLOAD CAPACITY", "Conservative mobile settings reduce simultaneous network and processing load.") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Maximum concurrent downloads", color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        Text("Default: 4", color = TextMuted, fontSize = 10.sp)
+                        Text("Default: 1 · Maximum: 2", color = TextMuted, fontSize = 10.sp)
                     }
                     Text("$maxConcurrent", color = Cyan, fontSize = 23.sp, fontWeight = FontWeight.ExtraBold)
                 }
-                Slider(value = maxConcurrent.toFloat(), onValueChange = { maxConcurrent = it.toInt().coerceIn(1, 8) }, valueRange = 1f..8f, steps = 6, onValueChangeFinished = { DownloadCoordinator.setMaxConcurrent(maxConcurrent) }, colors = SliderDefaults.colors(thumbColor = Cyan, activeTrackColor = Blue, inactiveTrackColor = Line))
-                Text("Android default is 4 active downloads. Higher concurrency may use more battery and bandwidth.", color = TextMuted, fontSize = 10.sp)
+                Slider(value = maxConcurrent.toFloat(), onValueChange = { maxConcurrent = it.toInt().coerceIn(1, 2) }, valueRange = 1f..2f, steps = 0, onValueChangeFinished = { DownloadCoordinator.setMaxConcurrent(maxConcurrent) }, colors = SliderDefaults.colors(thumbColor = Cyan, activeTrackColor = Blue, inactiveTrackColor = Line))
+                Text("Only one download runs by default. Two is the maximum; use one for cooler, quieter operation.", color = TextMuted, fontSize = 10.sp)
+            }
+        }
+        item {
+            val thermalText by DownloadCoordinator.thermalStatus.collectAsState()
+            SettingsCard("DEVICE SAFETY", "Download Studio limits background work and watches Android thermal status where the OS exposes it.") {
+                Text("Maximum concurrent downloads: $maxConcurrent", color = TextMain, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text(thermalText, color = Cyan, fontSize = 10.sp, lineHeight = 15.sp)
+                Text("Downloads are held at moderate thermal status and an active task is interrupted at severe status. Inactivity is limited to 15 minutes and each task has a six-hour maximum.", color = TextMuted, fontSize = 10.sp, lineHeight = 15.sp)
             }
         }
         item {
@@ -511,38 +508,9 @@ private fun SettingsScreen() {
             }
         }
         item {
-            SettingsCard("YOUTUBE FLOATING CONTROLS", "A small two-action panel appears while YouTube is in the foreground. Select an action, then use YouTube Share → Download Studio to provide the URL.") {
-                StatusLine("Display over other apps", Settings.canDrawOverlays(context), if (Settings.canDrawOverlays(context)) "Allowed" else "Permission required")
-                StatusLine("Usage access", hasUsageAccess(context), if (hasUsageAccess(context)) "Allowed" else "Permission required")
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Floating controls", color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        Text("Show the overlay while YouTube is open", color = TextMuted, fontSize = 10.sp)
-                    }
-                    Switch(checked = floating, onCheckedChange = { enable ->
-                        floating = enable; QueueStore.setFloatingEnabled(context, enable)
-                        if (enable) {
-                            when {
-                                !Settings.canDrawOverlays(context) -> context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}")))
-                                !hasUsageAccess(context) -> context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                                else -> startOverlayService(context)
-                            }
-                        } else context.stopService(Intent(context, OverlayService::class.java))
-                    })
-                }
-                Button(onClick = {
-                    when {
-                        !Settings.canDrawOverlays(context) -> context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}")))
-                        !hasUsageAccess(context) -> context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                        else -> { startOverlayService(context); floating = true; QueueStore.setFloatingEnabled(context, true) }
-                    }
-                }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Panel2)) { Icon(Icons.Default.PictureInPictureAlt, null); Spacer(Modifier.width(8.dp)); Text("Enable floating controls") }
-            }
-        }
-        item {
             SettingsCard("ABOUT DOWNLOAD STUDIO", "Local media downloader") {
                 Text("Developed by Amir Malik (2026)", color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Text("Version 0.1.2", color = TextMuted, fontSize = 10.sp)
+                Text("Version 0.1.3", color = TextMuted, fontSize = 10.sp)
             }
         }
         item {
@@ -550,15 +518,21 @@ private fun SettingsScreen() {
         }
     }
     LaunchedEffect(Unit) {
-        while (true) {
-            termuxInstalled = TermuxBridge.isInstalled(context)
-            termuxPermission = TermuxBridge.hasRunPermission(context)
-            treeGranted = !QueueStore.treeUri(context).isNullOrBlank()
-            if (engineStatus == "Checking…") {
+        termuxInstalled = TermuxBridge.isInstalled(context)
+        termuxPermission = TermuxBridge.hasRunPermission(context)
+        treeGranted = !QueueStore.treeUri(context).isNullOrBlank()
+    }
+    LaunchedEffect(engineStatus) {
+        if (engineStatus == "Checking…") {
+            repeat(15) {
                 val report = StorageAccess.readState(context, "DownloadStudioState/engine.txt")
-                if (!report.isNullOrBlank()) engineStatus = report.trim().replace("\n", " · ")
+                if (!report.isNullOrBlank()) {
+                    engineStatus = report.trim().replace("\\n", " · ")
+                    return@LaunchedEffect
+                }
+                delay(1_000)
             }
-            delay(1500)
+            if (engineStatus == "Checking…") engineStatus = "No response from Termux. Recheck its Run Command permission."
         }
     }
 }
@@ -622,17 +596,20 @@ private fun DetailLine(label: String, value: String) {
     }
 }
 
-private fun hasUsageAccess(context: Context): Boolean {
-    val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-    @Suppress("DEPRECATION")
-    val mode = if (Build.VERSION.SDK_INT >= 29) appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), context.packageName)
-    else appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), context.packageName)
-    return mode == AppOpsManager.MODE_ALLOWED
-}
 
-private fun startOverlayService(context: Context) {
-    val intent = Intent(context, OverlayService::class.java)
-    runCatching {
-        if (Build.VERSION.SDK_INT >= 26) ContextCompat.startForegroundService(context, intent) else context.startService(intent)
-    }.onFailure { Toast.makeText(context, "Could not start floating controls: ${it.message}", Toast.LENGTH_LONG).show() }
-}
+private fun youtubeThumbnailUrl(rawUrl: String): String? = runCatching {
+    val uri = Uri.parse(rawUrl)
+    val host = uri.host?.lowercase()?.removePrefix("www.") ?: return null
+    val videoId = when {
+        host == "youtu.be" -> uri.pathSegments.firstOrNull()
+        host.endsWith("youtube.com") || host == "youtube-nocookie.com" -> {
+            uri.getQueryParameter("v") ?: run {
+                val parts = uri.pathSegments
+                val marker = parts.indexOfFirst { it in setOf("shorts", "embed", "live") }
+                if (marker >= 0) parts.getOrNull(marker + 1) else null
+            }
+        }
+        else -> null
+    }
+    if (videoId != null && videoId.matches(Regex("[A-Za-z0-9_-]{11}"))) "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" else null
+}.getOrNull()

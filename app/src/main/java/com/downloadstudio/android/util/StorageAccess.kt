@@ -24,6 +24,31 @@ object StorageAccess {
         context.contentResolver.openInputStream(file.uri)?.bufferedReader()?.use { it.readText() }
     }.getOrNull()
 
+    fun readStateTail(context: Context, relativeName: String, maxBytes: Long = 48L * 1024L): String? = runCatching {
+        val root = treeRoot(context) ?: return null
+        val parts = relativeName.split('/').filter { it.isNotBlank() }
+        if (parts.isEmpty()) return null
+        var node = root
+        for (part in parts.dropLast(1)) node = node.findFile(part) ?: return null
+        val file = node.findFile(parts.last()) ?: return null
+        val input = context.contentResolver.openInputStream(file.uri) ?: return null
+        input.buffered().use { stream ->
+            val skipTarget = (file.length() - maxBytes).coerceAtLeast(0L)
+            var skipped = 0L
+            while (skipped < skipTarget) {
+                val count = stream.skip(skipTarget - skipped)
+                if (count > 0) skipped += count else {
+                    if (stream.read() == -1) break
+                    skipped++
+                }
+            }
+            stream.bufferedReader().use { reader ->
+                if (skipped > 0) reader.readLine()
+                reader.readText()
+            }
+        }
+    }.getOrNull()
+
     fun termuxPathForTreeUri(uri: Uri): String? = runCatching {
         val id = DocumentsContract.getTreeDocumentId(uri)
         val volume = id.substringBefore(':')

@@ -5,6 +5,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 permissions:
   contents: read
@@ -33,6 +35,9 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.13'
+
+      - name: Validate source safeguards
+        run: python3 validation/verify_project.py
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon

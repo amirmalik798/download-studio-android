@@ -1,27 +1,22 @@
-Download Studio for Android — Source Validation Report
-Version: 0.1.1
-Date: 2026-11-10
+DOWNLOAD STUDIO ANDROID v0.1.3 — SOURCE VALIDATION
 
-SOURCE-LEVEL CHECKS
-- AndroidManifest.xml parses as valid XML: PASS
-- Gradle plugin / Kotlin plugin / compile SDK values checked for internal consistency: PASS
-- Video format selector matches the supplied Media Downloader YouTube preset: PASS
-- Audio-to-MP3 selector matches the supplied Media Downloader preset: PASS
-- Reference yt-dlp defaults (--newline, --ignore-config, --no-playlist, output template) present: PASS
-- Termux Python/FFmpeg installation commands present: PASS
-- Termux RUN_COMMAND integration and manifest permission present: PASS
-- Default concurrency = 4 and configurable range 1–8: PASS
-- Concurrent queue state mutations are serialized: PASS
-- Termux command-start timeout/error reporting present: PASS
-- Overlay permission and YouTube foreground UsageStats integration present: PASS
-- GitHub Actions APK workflow present: PASS
-- GitHub Actions workflow YAML parses: PASS
-- Kotlin source parser scan: no syntax/"expecting" diagnostics found (type checking is not possible without Android/AndroidX classpaths)
+Changes:
+- Removed floating overlay service and associated SYSTEM_ALERT_WINDOW, Usage Access, and foreground-service permissions.
+- Registered ACTION_SEND text/plain for YouTube shared URLs; the app asks Video or Audio after receiving the URL.
+- Added YouTube thumbnail previews and visible VIDEO/AUDIO type labels to the shared queue/library row component.
+- Set concurrency to one by default and maximum two; yt-dlp concurrent fragments limited to one.
+- Added Android thermal status guard (API 29+): hold new jobs at MODERATE and interrupt/requeue active work at SEVERE+ until the phone cools.
+- Added two-second monitor interval, tail-only log reads, 15-minute inactivity timeout and six-hour maximum runtime.
+- Added a sleep-based Termux watchdog so inactivity/runtime limits continue while yt-dlp is running outside the app UI.
+- Replaced perpetual Settings polling with a bounded 15-second engine check.
+- Added YouTube thumbnail fallback and updated developer credit/version 0.1.3.
 
-BUILD STATUS
-- APK compilation: NOT PERFORMED
-- Reason: Android SDK / android.jar / Build Tools / Gradle are not installed in the execution environment, and outbound DNS is unavailable to fetch them.
-- Device test: NOT PERFORMED
+Static validation: included in GitHub Actions; pending new run.
+Kotlin syntax scan: pending remote build. Full Android compilation requires Gradle and Android SDK.
+Physical-device tests: not yet performed. Validate thermal pause/resume, Share-sheet routing, thumbnail display and a long-running paused download on the target Samsung phone.
 
-IMPORTANT
-This is static source validation, not a successful Android Gradle build. No APK is included. Use Android Studio on Windows or the included GitHub Actions workflow to create a genuine APK, then test it on a physical Android device.
+Limitations:
+- No software can guarantee zero device heating. FFmpeg and yt-dlp still use CPU, battery, storage and network when downloading/processing.
+- Android thermal status is available through the public API on Android 10+; OEM reporting varies. Older Android versions rely on the one-download default and two-download cap.
+- Download Studio registers as a share target but cannot force Samsung/Android to rank it first.
+- Static validation is not an APK malware scan or certification.
