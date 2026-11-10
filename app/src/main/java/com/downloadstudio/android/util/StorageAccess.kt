@@ -16,6 +16,18 @@ object StorageAccess {
         return DocumentFile.fromTreeUri(context, uri)
     }
 
+    /** Verify the saved SAF folder still exists with persisted read/write access. */
+    fun isDownloadLocationConfigured(context: Context): Boolean = runCatching {
+        val rawUri = QueueStore.treeUri(context) ?: return false
+        val uri = Uri.parse(rawUri)
+        val persisted = context.contentResolver.persistedUriPermissions.any {
+            it.uri == uri && it.isReadPermission && it.isWritePermission
+        }
+        val root = treeRoot(context) ?: return false
+        persisted && root.exists() && root.isDirectory && root.canWrite() &&
+            !destinationPath(context).isNullOrBlank()
+    }.getOrDefault(false)
+
     fun readState(context: Context, relativeName: String): String? = runCatching {
         val root = treeRoot(context) ?: return null
         val parts = relativeName.split('/').filter { it.isNotBlank() }
