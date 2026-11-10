@@ -540,6 +540,12 @@ private fun SettingsScreen() {
             }
         }
         item {
+            SettingsCard("ABOUT DOWNLOAD STUDIO", "Local media downloader") {
+                Text("Developed by Amir Malik (2026)", color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text("Version 0.1.2", color = TextMuted, fontSize = 10.sp)
+            }
+        }
+        item {
             Text("Download policy: yt-dlp handles extraction and format selection; FFmpeg handles merging and audio extraction. DRM circumvention is not supported.", color = TextMuted, fontSize = 10.sp, lineHeight = 15.sp, modifier = Modifier.padding(horizontal = 4.dp))
         }
     }

@@ -58,7 +58,7 @@ object TermuxBridge {
         val pid = "$stateDir/$id.pid"
         val exit = "$stateDir/$id.exit"
         val output = "$destination/%(title).200s-%(id)s.%(ext)s"
-        val common = "--newline --ignore-config --no-playlist --continue -o ${q(output)} " +
+        val common = "--newline --progress --ignore-config --no-playlist --continue -o ${q(output)} " +
             "--progress-template ${q("download:DS_PROGRESS|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes_estimate)s")} " +
             "--print ${q("after_move:DS_COMPLETE:%(filepath)s")}"
         val preset = if (mode == "AUDIO") {
@@ -70,7 +70,7 @@ object TermuxBridge {
         }
         return "mkdir -p ${q(destination)} ${q(stateDir)}; " +
             "rm -f ${q(log)} ${q(exit)} ${q(pid)}; " +
-            "yt-dlp $common $preset ${q(url)} > ${q(log)} 2>&1 & " +
+            "PYTHONUNBUFFERED=1 yt-dlp $common $preset ${q(url)} > ${q(log)} 2>&1 & " +
             "ds_pid=\$!; printf '%s' \"\$ds_pid\" > ${q(pid)}; wait \"\$ds_pid\"; " +
             "ds_code=\$?; printf '%s' \"\$ds_code\" > ${q(exit)}; exit \"\$ds_code\""
     }

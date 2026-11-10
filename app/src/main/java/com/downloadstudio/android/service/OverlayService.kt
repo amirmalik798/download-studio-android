@@ -42,7 +42,7 @@ class OverlayService : Service() {
     private var windowManager: WindowManager? = null
     private var panel: LinearLayout? = null
     private var params: WindowManager.LayoutParams? = null
-    private var expanded = false
+    private var expanded = true
     private var showing = false
     private var lastForegroundPackage: String? = null
     private var lastUsageQueryTime = 0L
@@ -112,7 +112,7 @@ class OverlayService : Service() {
             elevation = dp(14).toFloat()
         }
         val header = TextView(this).apply {
-            text = "DS  ·  DOWNLOAD VIDEO"
+            text = "DS  ·  DOWNLOAD STUDIO  ·  TAP TO COLLAPSE"
             setTextColor(Color.WHITE)
             textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
@@ -131,7 +131,6 @@ class OverlayService : Service() {
             Toast.makeText(this, "Audio selected. In YouTube, tap Share → Download Studio to send the current link.", Toast.LENGTH_LONG).show()
         }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(5) })
         root.addView(actions)
-        root.setOnClickListener { if (!expanded) toggleExpanded(root) }
         val type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         val lp = WindowManager.LayoutParams(
             dp(if (expanded) 238 else 174), WindowManager.LayoutParams.WRAP_CONTENT,
@@ -142,7 +141,7 @@ class OverlayService : Service() {
             gravity = Gravity.TOP or Gravity.END
             x = dp(12); y = dp(205)
         }
-        root.setOnTouchListener(DragTouchListener(wm, lp))
+        header.setOnTouchListener(DragTouchListener(wm, lp))
         try {
             wm.addView(root, lp)
             panel = root
@@ -165,6 +164,7 @@ class OverlayService : Service() {
 
     private fun chooseMode(mode: DownloadMode) {
         QueueStore.setPendingMode(this, mode)
+        Toast.makeText(this, if (mode == DownloadMode.VIDEO) "Video mode selected. Now use YouTube Share → Download Studio." else "Audio mode selected. Now use YouTube Share → Download Studio.", Toast.LENGTH_LONG).show()
         // A notification makes the next action obvious without trying to inspect YouTube's private player URL.
         val launch = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pi = android.app.PendingIntent.getActivity(this, 90, launch, android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
@@ -172,7 +172,7 @@ class OverlayService : Service() {
         manager.notify(91, NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_download_studio)
             .setContentTitle(if (mode == DownloadMode.VIDEO) "Video download selected" else "Audio download selected")
-            .setContentText("Now use YouTube Share → Download Studio to send the video URL.")
+            .setContentText("Mode selected. Use YouTube Share → Download Studio to send the current video URL.")
             .setContentIntent(pi).setAutoCancel(true).build())
     }
 
@@ -185,7 +185,7 @@ class OverlayService : Service() {
     private fun hidePanel() {
         if (!showing) return
         runCatching { windowManager?.removeView(panel) }
-        panel = null; params = null; showing = false; expanded = false
+        panel = null; params = null; showing = false; expanded = true
     }
 
     private fun rounded(color: String, radius: Int) = GradientDrawable().apply {
