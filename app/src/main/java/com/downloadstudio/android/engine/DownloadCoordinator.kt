@@ -393,8 +393,14 @@ object DownloadCoordinator {
     private fun parseProgress(id: String, log: String) {
         if (id in thermalDeferred) return
         val mediaTitle = log.lineSequence().lastOrNull { it.startsWith("DS_TITLE:") }?.substringAfter("DS_TITLE:")?.trim()
-        if (!mediaTitle.isNullOrBlank()) {
-            update(id) { current -> if (current.title == mediaTitle) current else current.copy(title = mediaTitle) }
+        val thumbnailUrl = log.lineSequence().lastOrNull { it.startsWith("DS_THUMBNAIL:") }?.substringAfter("DS_THUMBNAIL:")?.trim()
+        if (!mediaTitle.isNullOrBlank() || !thumbnailUrl.isNullOrBlank()) {
+            update(id) { current ->
+                current.copy(
+                    title = mediaTitle?.takeIf { it.isNotBlank() } ?: current.title,
+                    thumbnailUrl = thumbnailUrl?.takeIf { it.startsWith("https://") || it.startsWith("http://") } ?: current.thumbnailUrl
+                )
+            }
         }
         val line = log.lineSequence().lastOrNull { it.startsWith("DS_PROGRESS|") } ?: return
         val parts = line.split('|')
