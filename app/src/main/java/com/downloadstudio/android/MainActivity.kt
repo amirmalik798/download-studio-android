@@ -114,6 +114,18 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
     var mode by remember { mutableStateOf(DownloadMode.VIDEO) }
     var selected by remember { mutableStateOf<DownloadItem?>(null) }
     var shareUrl by remember { mutableStateOf<String?>(null) }
+    var setupReady by remember {
+        mutableStateOf(StorageAccess.isDownloadLocationConfigured(context) &&
+            TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context))
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            setupReady = StorageAccess.isDownloadLocationConfigured(context) &&
+                TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context)
+            if (!setupReady) tab = AppTab.SETTINGS
+            delay(750)
+        }
+    }
     val openDownload: (DownloadItem) -> Unit = { item ->
         if (item.status == DownloadStatus.COMPLETED) {
             val document = StorageAccess.findDownloadedDocument(context, item.outputPath)
@@ -144,8 +156,8 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
         containerColor = Ink,
         bottomBar = {
             NavigationBar(containerColor = Color(0xFF0D1524), tonalElevation = 0.dp) {
-                NavigationBarItem(selected = tab == AppTab.HOME, onClick = { tab = AppTab.HOME }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
-                NavigationBarItem(selected = tab == AppTab.DOWNLOADS, onClick = { tab = AppTab.DOWNLOADS }, icon = { Icon(Icons.Default.Download, null) }, label = { Text("Downloads") })
+                NavigationBarItem(selected = tab == AppTab.HOME, enabled = setupReady, onClick = { if (setupReady) tab = AppTab.HOME }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
+                NavigationBarItem(selected = tab == AppTab.DOWNLOADS, enabled = setupReady, onClick = { if (setupReady) tab = AppTab.DOWNLOADS }, icon = { Icon(Icons.Default.Download, null) }, label = { Text("Downloads") })
                 NavigationBarItem(selected = tab == AppTab.SETTINGS, onClick = { tab = AppTab.SETTINGS }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
             }
         }
@@ -153,7 +165,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
         Column(Modifier.fillMaxSize().background(Ink).padding(padding)) {
             TopHeader(tab) { tab = AppTab.SETTINGS }
             when (tab) {
-                AppTab.HOME -> HomeScreen(
+                AppTab.HOME -> if (setupReady) HomeScreen(
                     items = items, url = url, onUrl = { url = it }, mode = mode,
                     onMode = { mode = it }, onAdd = {
                         val clean = url.trim()
@@ -162,8 +174,8 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
                         } else Toast.makeText(context, "Enter a valid HTTP or HTTPS link", Toast.LENGTH_SHORT).show()
                     }, onOpenItem = openDownload, onQueue = { tab = AppTab.DOWNLOADS }
                 )
-                AppTab.DOWNLOADS -> DownloadsScreen(items, onOpenItem = openDownload)
-                AppTab.SETTINGS -> SettingsScreen()
+                AppTab.DOWNLOADS -> if (setupReady) DownloadsScreen(items, onOpenItem = openDownload)
+                AppTab.SETTINGS -> SettingsScreen(setupRequired = !setupReady)
             }
         }
     }
@@ -341,6 +353,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
     var sortExpanded by remember { mutableStateOf(false) }
     var toolsExpanded by remember { mutableStateOf(false) }
     var showClearConfirmation by remember { mutableStateOf(false) }
+    var itemPendingRemoval by remember { mutableStateOf<DownloadItem?>(null) }
     val active = items.count { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }
     val visibleItems = remember(items, search, filter, sort) {
         val matches = items.filter { item ->
@@ -417,19 +430,32 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 confirmButton = { TextButton(onClick = { DownloadCoordinator.clearAll(); showClearConfirmation = false }) { Text("Clear list", color = Red) } },
                 dismissButton = { TextButton(onClick = { showClearConfirmation = false }) { Text("Cancel") } })
         }
+        itemPendingRemoval?.let { item ->
+            AlertDialog(onDismissRequest = { itemPendingRemoval = null }, containerColor = Panel,
+                title = { Text("Remove from downloads?", color = TextMain) },
+                text = { Text("\"${displayTitle(item)}\" will be removed from Download Studio. The actual media file on your device will not be deleted.", color = TextMuted) },
+                confirmButton = {
+                    TextButton(onClick = { DownloadCoordinator.remove(item.id); itemPendingRemoval = null }) {
+                        Text("Remove", color = Red)
+                    }
+                },
+                dismissButton = { TextButton(onClick = { itemPendingRemoval = null }) { Text("Cancel") } })
+        }
         Spacer(Modifier.height(5.dp))
         when {
             items.isEmpty() -> EmptyState("No downloads yet", "Paste a link or use YouTube → Share → Download Studio.", Icons.Default.CloudDownload)
             visibleItems.isEmpty() -> EmptyState("No matching downloads", "Try another search term or category filter.", Icons.Default.Search)
             else -> LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
-                lazyItems(visibleItems, key = { it.id }) { item -> DownloadRow(item, onClick = { onOpenItem(item) }) }
+                lazyItems(visibleItems, key = { it.id }) { item ->
+                    DownloadRow(item, onClick = { onOpenItem(item) }, onRemoveRequest = { itemPendingRemoval = item })
+                }
             }
         }
     }
 }
 
 @Composable
-private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
+private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest: (() -> Unit)? = null) {
     val color = when (item.status) {
         DownloadStatus.COMPLETED -> Green
         DownloadStatus.FAILED -> Red
@@ -474,7 +500,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
                     DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
                         DropdownMenuItem(text = { Text("Remove from downloads") },
                             leadingIcon = { Icon(Icons.Default.RemoveCircleOutline, null) },
-                            onClick = { actionsExpanded = false; DownloadCoordinator.remove(item.id) })
+                            onClick = { actionsExpanded = false; onRemoveRequest?.invoke() })
                     }
                 }
             }
@@ -505,10 +531,10 @@ private fun EmptyState(title: String, detail: String, icon: androidx.compose.ui.
 }
 
 @Composable
-private fun SettingsScreen() {
+private fun SettingsScreen(setupRequired: Boolean = false) {
     val context = LocalContext.current
     var basePath by remember { mutableStateOf(QueueStore.basePath(context).orEmpty()) }
-    var treeGranted by remember { mutableStateOf(!QueueStore.treeUri(context).isNullOrBlank()) }
+    var treeGranted by remember { mutableStateOf(StorageAccess.isDownloadLocationConfigured(context)) }
     var maxConcurrent by remember { mutableIntStateOf(QueueStore.maxConcurrent(context)) }
     var termuxInstalled by remember { mutableStateOf(TermuxBridge.isInstalled(context)) }
     var termuxPermission by remember { mutableStateOf(TermuxBridge.hasRunPermission(context)) }
@@ -516,22 +542,38 @@ private fun SettingsScreen() {
     val clipboard = LocalClipboardManager.current
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
-            runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+            val permissionFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             val path = StorageAccess.termuxPathForTreeUri(uri)
-            if (path != null) {
+            val permissionGranted = runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, permissionFlags)
+                context.contentResolver.persistedUriPermissions.any {
+                    it.uri == uri && it.isReadPermission && it.isWritePermission
+                }
+            }.getOrDefault(false)
+            if (path != null && permissionGranted) {
                 QueueStore.setTree(context, uri.toString(), path)
-                basePath = path; treeGranted = true
+                basePath = path
+                treeGranted = StorageAccess.isDownloadLocationConfigured(context)
                 DownloadCoordinator.configurationChanged()
-                Toast.makeText(context, "Downloads folder saved", Toast.LENGTH_SHORT).show()
-            } else Toast.makeText(context, "Could not resolve the selected folder. Choose a folder on internal storage.", Toast.LENGTH_LONG).show()
+                if (treeGranted) Toast.makeText(context, "Downloads folder saved", Toast.LENGTH_SHORT).show()
+                else Toast.makeText(context, "Android did not grant writable folder access. Please choose the folder again.", Toast.LENGTH_LONG).show()
+            } else Toast.makeText(context, "Folder access was not granted. Choose a writable folder on internal storage.", Toast.LENGTH_LONG).show()
         }
     }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Settings", color = TextMain, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
                 Text("Configure the on-device download engine", color = TextMuted, fontSize = 12.sp)
+            }
+            if (setupRequired) {
+                Card(colors = CardDefaults.cardColors(containerColor = Panel2), border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = .65f)), shape = RoundedCornerShape(16.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("SETUP REQUIRED", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Configure a writable download folder, install Termux, and grant Download Studio the Run commands in Termux permission. Home and Downloads stay locked until all checks pass.", color = TextMain, fontSize = 11.sp, lineHeight = 16.sp)
+                    }
+                }
             }
         }
         item {
@@ -619,9 +661,13 @@ private fun SettingsScreen() {
         }
     }
     LaunchedEffect(Unit) {
-        termuxInstalled = TermuxBridge.isInstalled(context)
-        termuxPermission = TermuxBridge.hasRunPermission(context)
-        treeGranted = !QueueStore.treeUri(context).isNullOrBlank()
+        while (true) {
+            termuxInstalled = TermuxBridge.isInstalled(context)
+            termuxPermission = TermuxBridge.hasRunPermission(context)
+            treeGranted = StorageAccess.isDownloadLocationConfigured(context)
+            basePath = QueueStore.basePath(context).orEmpty()
+            delay(750)
+        }
     }
     LaunchedEffect(engineStatus) {
         if (engineStatus == "Checking…") {
