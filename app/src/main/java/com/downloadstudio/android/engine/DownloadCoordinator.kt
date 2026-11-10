@@ -48,6 +48,7 @@ object DownloadCoordinator {
     @Volatile private var maxConcurrent = 1
     @Volatile private var currentThermalStatus = 0
     @Volatile private var initialized = false
+    @Volatile private var bulkClearing = false
 
     fun initialize(context: Context) {
         if (initialized) return
@@ -189,13 +190,29 @@ object DownloadCoordinator {
     }
 
     fun clearAll() {
-        _items.value.filter {
-            it.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)
-        }.forEach { stop(it.id) }
-        synchronized(stateLock) {
+        // Close the queue pump gate before taking the snapshot. Workers that finish
+        // during this operation must not launch another queued item.
+        bulkClearing = true
+        val idsToStop = synchronized(stateLock) {
+            val ids = (active.keys + _items.value.filter {
+                it.status in setOf(
+                    DownloadStatus.DOWNLOADING, DownloadStatus.STARTING,
+                    DownloadStatus.PAUSED, DownloadStatus.PROCESSING
+                )
+            }.map { it.id }).toSet()
             _items.value = emptyList()
-            QueueStore.save(appContext, _items.value)
+            QueueStore.save(appContext, emptyList())
+            ids
         }
+
+        idsToStop.forEach { id ->
+            cancelled.add(id)
+            thermalDeferred.remove(id)
+            signal(id, "INT")
+            active[id]?.cancel()
+        }
+        // No queued records remain; a later enqueue can safely restart the pump.
+        bulkClearing = false
     }
 
     private fun signal(id: String, signal: String) {
@@ -206,11 +223,11 @@ object DownloadCoordinator {
     }
 
     private fun pump() {
-        if (!initialized || StorageAccess.destinationPath(appContext).isNullOrBlank()) return
+        if (!initialized || bulkClearing || StorageAccess.destinationPath(appContext).isNullOrBlank()) return
         if (currentThermalStatus >= THERMAL_DEFER_THRESHOLD) return
         scope.launch {
             mutex.withLock {
-                while (active.size < maxConcurrent && currentThermalStatus < THERMAL_DEFER_THRESHOLD) {
+                while (!bulkClearing && active.size < maxConcurrent && currentThermalStatus < THERMAL_DEFER_THRESHOLD) {
                     val next = _items.value.firstOrNull { it.status == DownloadStatus.QUEUED && it.id !in active.keys } ?: break
                     val worker = scope.launch(start = CoroutineStart.LAZY) { runJob(next) }
                     active[next.id] = worker
