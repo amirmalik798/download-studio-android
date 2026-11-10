@@ -469,6 +469,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
 
 @Composable
 private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest: (() -> Unit)? = null) {
+    val context = LocalContext.current
     val color = when (item.status) {
         DownloadStatus.COMPLETED -> Green
         DownloadStatus.FAILED -> Red
