@@ -38,7 +38,8 @@ def main() -> int:
     require('getInt(KEY_MAX, 1)' in queue_store and "coerceIn(1, 2)" in queue_store, "Queue concurrency default/range not conservative")
     require("maxConcurrent = 1" in coordinator and "value.coerceIn(1, 2)" in coordinator, "Coordinator concurrency limit missing")
     require("addThermalStatusListener" in coordinator and "THERMAL_STOP_THRESHOLD" in coordinator, "Thermal guard missing")
-    require("thermalDeferred.remove(id)\\n            update(id) { it.copy(status = DownloadStatus.STARTING" in coordinator, "Thermal retry marker is not cleared before a new run")
+    thermal_retry_guard = "thermalDeferred.remove(id)" + chr(10) + "            update(id) { it.copy(status = DownloadStatus.STARTING"
+    require(thermal_retry_guard in coordinator, "Thermal retry marker is not cleared before a new run")
     require("MAX_DOWNLOAD_RUNTIME_MS" in coordinator and "STALL_TIMEOUT_MS" in coordinator and "START_TIMEOUT_MS" in coordinator, "Bounded download monitoring missing")
     require("readStateTail" in coordinator and "fun readStateTail" in storage, "Tail-only log polling missing")
     require("current.status == DownloadStatus.QUEUED) current" in coordinator, "Progress parser status guard is malformed or missing")
