@@ -74,7 +74,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = scheme) {
                 DownloadStudioRoot(
                     onIncomingUrl = { url, mode ->
-                        runCatching { DownloadCoordinator.enqueue(url, mode, "Shared media") }
+                        runCatching { DownloadCoordinator.enqueue(url, mode) }
                             .onFailure { Toast.makeText(this, it.message ?: "Could not add link", Toast.LENGTH_LONG).show() }
                     }
                 )
@@ -103,7 +103,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class AppTab { HOME, QUEUE, LIBRARY, SETTINGS }
+private enum class AppTab { HOME, DOWNLOADS, SETTINGS }
 
 @Composable
 private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
@@ -114,6 +114,24 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
     var mode by remember { mutableStateOf(DownloadMode.VIDEO) }
     var selected by remember { mutableStateOf<DownloadItem?>(null) }
     var shareUrl by remember { mutableStateOf<String?>(null) }
+    val openDownload: (DownloadItem) -> Unit = { item ->
+        if (item.status == DownloadStatus.COMPLETED) {
+            val document = StorageAccess.findDownloadedDocument(context, item.outputPath)
+            if (document == null) {
+                Toast.makeText(context, "The downloaded file could not be found in the selected folder.", Toast.LENGTH_LONG).show()
+            } else {
+                val mimeType = document.type ?: StorageAccess.mimeTypeForFileName(document.name.orEmpty()) ?: "*/*"
+                val openIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(document.uri, mimeType)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                runCatching { context.startActivity(openIntent) }
+                    .onFailure { Toast.makeText(context, "No compatible app is available to open this file.", Toast.LENGTH_LONG).show() }
+            }
+        } else {
+            selected = item
+        }
+    }
     val incoming = MainActivity.pendingSharedUrl
     LaunchedEffect(incoming) {
         if (!incoming.isNullOrBlank()) {
@@ -127,8 +145,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
         bottomBar = {
             NavigationBar(containerColor = Color(0xFF0D1524), tonalElevation = 0.dp) {
                 NavigationBarItem(selected = tab == AppTab.HOME, onClick = { tab = AppTab.HOME }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
-                NavigationBarItem(selected = tab == AppTab.QUEUE, onClick = { tab = AppTab.QUEUE }, icon = { Icon(Icons.Default.Downloading, null) }, label = { Text("Queue") })
-                NavigationBarItem(selected = tab == AppTab.LIBRARY, onClick = { tab = AppTab.LIBRARY }, icon = { Icon(Icons.Default.VideoLibrary, null) }, label = { Text("Library") })
+                NavigationBarItem(selected = tab == AppTab.DOWNLOADS, onClick = { tab = AppTab.DOWNLOADS }, icon = { Icon(Icons.Default.Download, null) }, label = { Text("Downloads") })
                 NavigationBarItem(selected = tab == AppTab.SETTINGS, onClick = { tab = AppTab.SETTINGS }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
             }
         }
@@ -141,12 +158,11 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
                     onMode = { mode = it }, onAdd = {
                         val clean = url.trim()
                         if (clean.startsWith("http://") || clean.startsWith("https://")) {
-                            onIncomingUrl(clean, mode); url = ""; tab = AppTab.QUEUE
+                            onIncomingUrl(clean, mode); url = ""; tab = AppTab.DOWNLOADS
                         } else Toast.makeText(context, "Enter a valid HTTP or HTTPS link", Toast.LENGTH_SHORT).show()
-                    }, onOpenItem = { selected = it }, onQueue = { tab = AppTab.QUEUE }
+                    }, onOpenItem = openDownload, onQueue = { tab = AppTab.DOWNLOADS }
                 )
-                AppTab.QUEUE -> QueueScreen(items, onOpenItem = { selected = it })
-                AppTab.LIBRARY -> LibraryScreen(items.filter { it.status == DownloadStatus.COMPLETED }, onOpenItem = { selected = it })
+                AppTab.DOWNLOADS -> DownloadsScreen(items, onOpenItem = openDownload)
                 AppTab.SETTINGS -> SettingsScreen()
             }
         }
@@ -168,7 +184,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { onIncomingUrl(shared, mode); shareUrl = null; tab = AppTab.QUEUE }) { Text("Add to queue") }
+                TextButton(onClick = { onIncomingUrl(shared, mode); shareUrl = null; tab = AppTab.DOWNLOADS }) { Text("Add download") }
             },
             dismissButton = { TextButton(onClick = { shareUrl = null }) { Text("Cancel") } }
         )
@@ -236,7 +252,7 @@ private fun HomeScreen(
                     )
                     ModeSelector(mode, onMode)
                     Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Blue)) {
-                        Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Add to download queue", fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Add download", fontWeight = FontWeight.Bold)
                     }
                     Text("Best available video + audio or best-audio MP3 preset.", color = TextMuted, fontSize = 10.sp)
                 }
@@ -253,7 +269,7 @@ private fun HomeScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Recent downloads", color = TextMain, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onQueue) { Text("View queue", color = Cyan) }
+                TextButton(onClick = onQueue) { Text("View downloads", color = Cyan) }
             }
         }
         if (items.isEmpty()) {
@@ -308,33 +324,96 @@ private fun ShareFeatureCard() {
     }
 }
 
-@Composable
-private fun QueueScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem) -> Unit) {
-    val active = items.count { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }
-    Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Download queue", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
-                Text("$active active · ${items.count { it.status == DownloadStatus.QUEUED }} waiting", color = TextMuted, fontSize = 12.sp)
-            }
-            Text("${items.size} ITEMS", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 10.sp)
-        }
-        Spacer(Modifier.height(14.dp))
-        if (items.isEmpty()) EmptyState("Your queue is clear", "Add a URL or share a video from YouTube to Download Studio.", Icons.Default.CloudDownload)
-        else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
-            lazyItems(items.sortedByDescending { it.createdAt }, key = { it.id }) { DownloadRow(it, onClick = { onOpenItem(it) }) }
-        }
-    }
+private enum class DownloadSort(val label: String) {
+    NAME_ASC("Name · A–Z"),
+    NAME_DESC("Name · Z–A"),
+    DATE_NEWEST("Date · Newest first"),
+    DATE_OLDEST("Date · Oldest first")
 }
 
+private enum class DownloadFilter { ALL, VIDEO, AUDIO }
+
 @Composable
-private fun LibraryScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem) -> Unit) {
-    Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 16.dp)) {
-        Text("Your library", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
-        Text("Completed downloads", color = TextMuted, fontSize = 12.sp)
-        Spacer(Modifier.height(14.dp))
-        if (items.isEmpty()) EmptyState("No completed files yet", "Your finished videos and audio will appear here.", Icons.Default.VideoLibrary)
-        else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) { lazyItems(items, key = { it.id }) { DownloadRow(it, onClick = { onOpenItem(it) }) } }
+private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem) -> Unit) {
+    var search by remember { mutableStateOf("") }
+    var filter by remember { mutableStateOf(DownloadFilter.ALL) }
+    var sort by remember { mutableStateOf(DownloadSort.DATE_NEWEST) }
+    var sortExpanded by remember { mutableStateOf(false) }
+    val active = items.count { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }
+    val visibleItems = remember(items, search, filter, sort) {
+        val matches = items.filter { item ->
+            val categoryMatches = when (filter) {
+                DownloadFilter.ALL -> true
+                DownloadFilter.VIDEO -> item.mode == DownloadMode.VIDEO
+                DownloadFilter.AUDIO -> item.mode == DownloadMode.AUDIO
+            }
+            categoryMatches && displayTitle(item).contains(search.trim(), ignoreCase = true)
+        }
+        when (sort) {
+            DownloadSort.NAME_ASC -> matches.sortedBy { displayTitle(it).lowercase(Locale.ROOT) }
+            DownloadSort.NAME_DESC -> matches.sortedByDescending { displayTitle(it).lowercase(Locale.ROOT) }
+            DownloadSort.DATE_NEWEST -> matches.sortedByDescending { downloadTimestamp(it) }
+            DownloadSort.DATE_OLDEST -> matches.sortedBy { downloadTimestamp(it) }
+        }
+    }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Downloads", color = TextMain, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
+                Text("${items.size} items · $active active · ${items.count { it.status == DownloadStatus.COMPLETED }} completed", color = TextMuted, fontSize = 11.sp)
+            }
+            Text("${visibleItems.size}", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = search,
+            onValueChange = { search = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Search by name", color = TextMuted) },
+            leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
+            trailingIcon = {
+                if (search.isNotBlank()) IconButton(onClick = { search = "" }) { Icon(Icons.Default.Close, "Clear search", tint = TextMuted) }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = TextMain, unfocusedTextColor = TextMain,
+                focusedBorderColor = Blue, unfocusedBorderColor = Line,
+                cursorColor = Cyan, focusedContainerColor = Color(0xFF0C1525), unfocusedContainerColor = Color(0xFF0C1525)
+            )
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(selected = filter == DownloadFilter.ALL, onClick = { filter = DownloadFilter.ALL }, label = { Text("All") })
+            FilterChip(selected = filter == DownloadFilter.VIDEO, onClick = { filter = DownloadFilter.VIDEO }, label = { Text("Video") })
+            FilterChip(selected = filter == DownloadFilter.AUDIO, onClick = { filter = DownloadFilter.AUDIO }, label = { Text("Audio") })
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("SORT BY", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
+            Spacer(Modifier.weight(1f))
+            Box {
+                TextButton(onClick = { sortExpanded = true }) {
+                    Icon(Icons.Default.Sort, null, tint = Cyan, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(sort.label, color = Cyan, fontSize = 11.sp)
+                    Icon(Icons.Default.ArrowDropDown, null, tint = Cyan)
+                }
+                DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
+                    DownloadSort.values().forEach { option ->
+                        DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortExpanded = false })
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        when {
+            items.isEmpty() -> EmptyState("No downloads yet", "Paste a link or use YouTube → Share → Download Studio.", Icons.Default.CloudDownload)
+            visibleItems.isEmpty() -> EmptyState("No matching downloads", "Try another search term or category filter.", Icons.Default.Search)
+            else -> LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
+                lazyItems(visibleItems, key = { it.id }) { item -> DownloadRow(item, onClick = { onOpenItem(item) }) }
+            }
+        }
     }
 }
 
@@ -364,7 +443,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
                     }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(item.title, color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         val isVideo = item.mode == DownloadMode.VIDEO
                         Box(Modifier.clip(CircleShape).background((if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
@@ -510,7 +589,7 @@ private fun SettingsScreen() {
         item {
             SettingsCard("ABOUT DOWNLOAD STUDIO", "Local media downloader") {
                 Text("Developed by Amir Malik (2026)", color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Text("Version 0.1.3", color = TextMuted, fontSize = 10.sp)
+                Text("Version 0.1.4", color = TextMuted, fontSize = 10.sp)
             }
         }
         item {
@@ -564,11 +643,12 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Panel,
-        title = { Text(item.title, color = TextMain, fontWeight = FontWeight.Bold) },
+        title = { Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best audio · MP3")
                 DetailLine("Status", item.status.name)
+                DetailLine("Download date", formatDownloadDate(item))
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
                 DetailLine("Speed", item.speed)
                 DetailLine("ETA", item.eta)
@@ -597,10 +677,10 @@ private fun DetailLine(label: String, value: String) {
 }
 
 
-private fun youtubeThumbnailUrl(rawUrl: String): String? = runCatching {
+private fun youtubeVideoId(rawUrl: String): String? = runCatching {
     val uri = Uri.parse(rawUrl)
     val host = uri.host?.lowercase()?.removePrefix("www.") ?: return null
-    val videoId = when {
+    val candidate = when {
         host == "youtu.be" -> uri.pathSegments.firstOrNull()
         host.endsWith("youtube.com") || host == "youtube-nocookie.com" -> {
             uri.getQueryParameter("v") ?: run {
@@ -611,5 +691,28 @@ private fun youtubeThumbnailUrl(rawUrl: String): String? = runCatching {
         }
         else -> null
     }
-    if (videoId != null && videoId.matches(Regex("[A-Za-z0-9_-]{11}"))) "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" else null
+    candidate?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{11}")) }
 }.getOrNull()
+
+private fun youtubeThumbnailUrl(rawUrl: String): String? = youtubeVideoId(rawUrl)?.let {
+    "https://i.ytimg.com/vi/$it/hqdefault.jpg"
+}
+
+private fun displayTitle(item: DownloadItem): String {
+    val title = item.title.trim()
+    val placeholders = setOf("shared media", "new download", "youtube video", "video from youtube.com", "video from youtu.be")
+    if (title.isNotBlank() && title.lowercase(Locale.ROOT) !in placeholders) return title
+    val rawName = item.outputPath.substringAfterLast("/")
+    val fileName = rawName.substringBeforeLast(".", rawName)
+    if (fileName.isNotBlank()) {
+        val id = youtubeVideoId(item.url)
+        val extracted = if (id != null) fileName.removeSuffix("-$id") else fileName
+        if (extracted.isNotBlank()) return extracted
+    }
+    return if (youtubeVideoId(item.url) != null) "YouTube video" else title.ifBlank { "Downloaded media" }
+}
+
+private fun downloadTimestamp(item: DownloadItem): Long = item.completedAt.takeIf { it > 0L } ?: item.createdAt
+
+private fun formatDownloadDate(item: DownloadItem): String =
+    java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(downloadTimestamp(item)))

@@ -3,6 +3,7 @@ package com.downloadstudio.android.util
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import com.downloadstudio.android.data.QueueStore
 
@@ -47,6 +48,22 @@ object StorageAccess {
                 reader.readText()
             }
         }
+    }.getOrNull()
+
+    fun findDownloadedDocument(context: Context, outputPath: String): DocumentFile? = runCatching {
+        val base = destinationPath(context)?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
+        val cleanPath = outputPath.trim()
+        if (!cleanPath.startsWith("$base/")) return null
+        val relative = cleanPath.removePrefix("$base/").split('/').filter { it.isNotBlank() }
+        if (relative.isEmpty() || relative.any { it == "." || it == ".." }) return null
+        var node = treeRoot(context) ?: return null
+        for (part in relative) node = node.findFile(part) ?: return null
+        node.takeIf { it.exists() && it.isFile }
+    }.getOrNull()
+
+    fun mimeTypeForFileName(fileName: String): String? = runCatching {
+        val extension = fileName.substringAfterLast('.', "").lowercase()
+        extension.takeIf { it.isNotBlank() }?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
     }.getOrNull()
 
     fun termuxPathForTreeUri(uri: Uri): String? = runCatching {

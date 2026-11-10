@@ -13,7 +13,8 @@ data class DownloadItem(
     val format: String = "",
     val outputPath: String = "",
     val error: String = "",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val completedAt: Long = 0L
 )
 
 enum class DownloadMode { VIDEO, AUDIO }

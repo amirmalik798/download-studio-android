@@ -60,6 +60,7 @@ object TermuxBridge {
         val output = "$destination/%(title).200s-%(id)s.%(ext)s"
         val common = "--newline --progress --concurrent-fragments 1 --ignore-config --no-playlist --continue -o ${q(output)} " +
             "--progress-template ${q("download:DS_PROGRESS|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes_estimate)s")} " +
+            "--print ${q("before_dl:DS_TITLE:%(title)s")} " +
             "--print ${q("after_move:DS_COMPLETE:%(filepath)s")}"
         val preset = if (mode == "AUDIO") {
             "-f bestaudio --extract-audio --audio-quality 0 --audio-format mp3 --embed-thumbnail"
