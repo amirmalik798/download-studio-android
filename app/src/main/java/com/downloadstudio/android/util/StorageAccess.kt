@@ -37,6 +37,16 @@ object StorageAccess {
         context.contentResolver.openInputStream(file.uri)?.bufferedReader()?.use { it.readText() }
     }.getOrNull()
 
+    /** Remove only an app-created state file whose relative path contains no traversal segments. */
+    fun deleteStateFile(context: Context, relativeName: String): Boolean = runCatching {
+        val parts = relativeName.split('/').filter { it.isNotBlank() }
+        if (parts.isEmpty() || parts.any { it == "." || it == ".." }) return false
+        val root = treeRoot(context) ?: return false
+        var node = root
+        for (part in parts.dropLast(1)) node = node.findFile(part) ?: return false
+        node.findFile(parts.last())?.delete() ?: false
+    }.getOrDefault(false)
+
     fun readStateTail(context: Context, relativeName: String, maxBytes: Long = 48L * 1024L): String? = runCatching {
         val root = treeRoot(context) ?: return null
         val parts = relativeName.split('/').filter { it.isNotBlank() }
