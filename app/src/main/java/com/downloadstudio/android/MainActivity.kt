@@ -685,7 +685,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                         instagramConnected = false
                     }) { Text("Remove Instagram session", color = Red) }
                 }
-                Text("Only supported, authorized media is downloaded. Login may be restricted by the platform inside embedded browsers; if that happens, use public links or disconnect the session. Download Studio does not access the separate Facebook or Instagram app's private storage.", color = TextMuted, fontSize = 10.sp, lineHeight = 15.sp)
+                Text("During an authenticated download, a hidden temporary cookie file is briefly written to your selected download folder so Termux can import it, then deleted. Only supported, authorized media is downloaded. Meta may restrict embedded-browser login. Download Studio cannot access the separate Facebook or Instagram app's private storage.", color = TextMuted, fontSize = 10.sp, lineHeight = 15.sp)
             }
         }
         item {
