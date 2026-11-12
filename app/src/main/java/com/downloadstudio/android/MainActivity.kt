@@ -37,6 +37,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.downloadstudio.android.auth.BrowserSessionActivity
+import com.downloadstudio.android.auth.BrowserSessionStore
 import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
@@ -581,6 +583,12 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
     var termuxPermission by remember { mutableStateOf(TermuxBridge.hasRunPermission(context)) }
     var engineStatus by remember { mutableStateOf("Not checked") }
     val clipboard = LocalClipboardManager.current
+    var facebookConnected by remember { mutableStateOf(BrowserSessionStore.isConnected(context, BrowserSessionStore.Platform.FACEBOOK)) }
+    var instagramConnected by remember { mutableStateOf(BrowserSessionStore.isConnected(context, BrowserSessionStore.Platform.INSTAGRAM)) }
+    val sessionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        facebookConnected = BrowserSessionStore.isConnected(context, BrowserSessionStore.Platform.FACEBOOK)
+        instagramConnected = BrowserSessionStore.isConnected(context, BrowserSessionStore.Platform.INSTAGRAM)
+    }
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             val permissionFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
@@ -650,6 +658,34 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                 Text("Maximum concurrent downloads: $maxConcurrent", color = TextMain, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                 Text(thermalText, color = Cyan, fontSize = 10.sp, lineHeight = 15.sp)
                 Text("Downloads are held at moderate thermal status and an active task is interrupted at severe status. Inactivity is limited to 15 minutes and each task has a six-hour maximum.", color = TextMuted, fontSize = 10.sp, lineHeight = 15.sp)
+            }
+        }
+        item {
+            SettingsCard("AUTHENTICATED MEDIA SESSIONS", "Sign in through Download Studio's in-app browser. Saved session cookies are encrypted with Android Keystore and used only for matching Facebook or Instagram downloads.") {
+                StatusLine("Facebook browser session", facebookConnected, if (facebookConnected) "Saved securely" else "Not connected")
+                OutlinedButton(
+                    onClick = { sessionLauncher.launch(BrowserSessionActivity.intent(context, BrowserSessionStore.Platform.FACEBOOK)) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Icon(Icons.Default.Language, null); Spacer(Modifier.width(8.dp)); Text(if (facebookConnected) "Update Facebook session" else "Connect Facebook") }
+                if (facebookConnected) {
+                    TextButton(onClick = {
+                        BrowserSessionStore.remove(context, BrowserSessionStore.Platform.FACEBOOK)
+                        facebookConnected = false
+                    }) { Text("Remove Facebook session", color = Red) }
+                }
+                Divider(color = Line)
+                StatusLine("Instagram browser session", instagramConnected, if (instagramConnected) "Saved securely" else "Not connected")
+                OutlinedButton(
+                    onClick = { sessionLauncher.launch(BrowserSessionActivity.intent(context, BrowserSessionStore.Platform.INSTAGRAM)) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Icon(Icons.Default.Language, null); Spacer(Modifier.width(8.dp)); Text(if (instagramConnected) "Update Instagram session" else "Connect Instagram") }
+                if (instagramConnected) {
+                    TextButton(onClick = {
+                        BrowserSessionStore.remove(context, BrowserSessionStore.Platform.INSTAGRAM)
+                        instagramConnected = false
+                    }) { Text("Remove Instagram session", color = Red) }
+                }
+                Text("Only supported, authorized media is downloaded. Login may be restricted by the platform inside embedded browsers; if that happens, use public links or disconnect the session. Download Studio does not access the separate Facebook or Instagram app's private storage.", color = TextMuted, fontSize = 10.sp, lineHeight = 15.sp)
             }
         }
         item {
