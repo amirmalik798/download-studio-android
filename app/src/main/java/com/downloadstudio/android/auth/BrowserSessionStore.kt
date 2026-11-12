@@ -5,6 +5,7 @@ import android.net.Uri
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.webkit.CookieManager
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -49,6 +50,26 @@ object BrowserSessionStore {
 
     fun remove(context: Context, platform: Platform) {
         prefs(context).edit().remove(platform.key).commit()
+        clearBrowserCookies(platform)
+    }
+
+    private fun clearBrowserCookies(platform: Platform) {
+        runCatching {
+            val manager = CookieManager.getInstance()
+            val hosts = when (platform) {
+                Platform.FACEBOOK -> listOf("https://www.facebook.com/", "https://m.facebook.com/", "https://web.facebook.com/")
+                Platform.INSTAGRAM -> listOf("https://www.instagram.com/", "https://i.instagram.com/")
+            }
+            hosts.forEach { url ->
+                val names = manager.getCookie(url).orEmpty().split(';').mapNotNull { part ->
+                    part.trim().substringBefore('=').takeIf { it.matches(Regex("[A-Za-z0-9_]+")) }
+                }.distinct()
+                names.forEach { name ->
+                    manager.setCookie(url, "$name=; Max-Age=0; path=/; domain=${platform.domain}")
+                }
+            }
+            manager.flush()
+        }
     }
 
     private fun read(context: Context, platform: Platform): String? = runCatching {
