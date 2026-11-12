@@ -29,6 +29,11 @@
             </intent-filter>
         </activity>
         <activity
+            android:name=".auth.BrowserMediaResolverActivity"
+            android:label="Resolve media"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
+        <activity
             android:name=".auth.BrowserSessionActivity"
             android:label="Connect media account"
             android:exported="false"
