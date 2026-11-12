@@ -47,6 +47,7 @@ import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import java.net.InetAddress
@@ -1056,7 +1057,11 @@ private suspend fun resolveDownloaderPreview(
         val state = withContext(Dispatchers.IO) { StorageAccess.readState(context, statePath) }
         if (!state.isNullOrBlank() && state.contains("DS_DONE")) {
             withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
-            return parsePreviewResult(state)
+            val parsed = parsePreviewResult(state)
+            val safeThumbnail = if (parsed.thumbnailUrl.isBlank()) "" else withContext(Dispatchers.IO) {
+                parsed.thumbnailUrl.takeIf { isPublicHttpsUrl(it) }.orEmpty()
+            }
+            return parsed.copy(thumbnailUrl = safeThumbnail)
         }
     }
     withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
