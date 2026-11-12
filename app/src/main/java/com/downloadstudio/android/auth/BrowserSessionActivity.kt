@@ -167,10 +167,10 @@ class BrowserSessionActivity : Activity() {
         }
         val domain = platform.domain
         val lines = cookies.map { (name, value) ->
-            "$domain\\tTRUE\\t/\\tTRUE\\t0\\t$name\\t$value"
+            "$domain\tTRUE\t/\tTRUE\t0\t$name\t$value"
         }
         val jar = (listOf("# Netscape HTTP Cookie File", "# Saved by Download Studio with your approval") + lines)
-            .joinToString("\\n", postfix = "\\n")
+            .joinToString("\n", postfix = "\n")
         runCatching { BrowserSessionStore.save(this, platform, jar) }
             .onSuccess {
                 setResult(RESULT_OK, Intent().putExtra(EXTRA_PLATFORM, platform.name))
