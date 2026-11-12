@@ -89,10 +89,6 @@ object TermuxBridge {
     }
 
     /**
-     * Adds a one-shot cookie transfer to the existing download command. The temporary
-     * SAF copy is moved into Termux-private storage, chmodded, and removed before yt-dlp runs.
-     */
-    /**
      * Moves the temporary SAF cookie copy into Termux-private storage before yt-dlp starts.
      * The shared-storage copy is removed immediately and the private copy is removed on exit.
      */
