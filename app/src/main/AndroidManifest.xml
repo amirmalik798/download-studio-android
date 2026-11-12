@@ -28,5 +28,10 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".auth.BrowserSessionActivity"
+            android:label="Connect media account"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
     </application>
 </manifest>
