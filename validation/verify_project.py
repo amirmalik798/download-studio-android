@@ -60,6 +60,7 @@ def main() -> int:
     require("readStateTail" in coordinator and "fun readStateTail" in storage, "Tail-only log polling missing")
     require("current.status == DownloadStatus.QUEUED) current" in coordinator, "Progress parser status guard is malformed or missing")
     require("while (true)" not in coordinator and "while (true)" not in main_activity, "Unbounded polling loop remains")
+    require('bestvideo+bestaudio/best' in termux and '-f bestaudio --extract-audio --audio-quality 0 --audio-format mp3' in termux, "Best-available video/audio selectors missing")
     require("--concurrent-fragments 1" in termux, "yt-dlp fragment concurrency limit missing")
     require("ds_watch_ticks" in termux and "-lt 360" in termux and "sleep 60" in termux, "Termux bounded watchdog missing")
     require("pkg install -y python ffmpeg coreutils procps" in termux, "Termux coreutils/procps packages missing")
