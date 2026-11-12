@@ -126,56 +126,15 @@ class BrowserSessionActivity : Activity() {
     }
 
     private fun saveSession() {
-        val manager = CookieManager.getInstance()
-        manager.flush()
-        val urls = when (platform) {
-            BrowserSessionStore.Platform.FACEBOOK -> listOf(
-                "https://www.facebook.com/",
-                "https://m.facebook.com/",
-                "https://web.facebook.com/"
-            )
-            BrowserSessionStore.Platform.INSTAGRAM -> listOf(
-                "https://www.instagram.com/",
-                "https://i.instagram.com/"
-            )
-        }
-        val cookies = linkedMapOf<String, String>()
-        urls.forEach { url ->
-            manager.getCookie(url)?.split(';')?.forEach { part ->
-                val trimmed = part.trim()
-                val split = trimmed.indexOf('=')
-                if (split > 0) {
-                    val name = trimmed.substring(0, split).trim()
-                    val value = trimmed.substring(split + 1).trim()
-                    if (name.matches(Regex("[A-Za-z0-9_]+")) && value.isNotEmpty() && value.none { it.isWhitespace() }) {
-                        cookies[name] = value
-                    }
-                }
-            }
-        }
-        val required = when (platform) {
-            BrowserSessionStore.Platform.FACEBOOK -> setOf("c_user", "xs")
-            BrowserSessionStore.Platform.INSTAGRAM -> setOf("sessionid")
-        }
-        if (!cookies.keys.containsAll(required)) {
-            status.text = "A complete signed-in session was not detected. Finish signing in, then try again."
-            Toast.makeText(this, "Please sign in to ${platform.label} first.", Toast.LENGTH_LONG).show()
-            return
-        }
-        val domain = platform.domain
-        val lines = cookies.map { (name, value) ->
-            "$domain\tTRUE\t/\tTRUE\t0\t$name\t$value"
-        }
-        val jar = (listOf("# Netscape HTTP Cookie File", "# Saved by Download Studio with your approval") + lines)
-            .joinToString("\n", postfix = "\n")
-        runCatching { BrowserSessionStore.save(this, platform, jar) }
+        CookieManager.getInstance().flush()
+        runCatching { BrowserSessionStore.save(this, platform) }
             .onSuccess {
                 setResult(RESULT_OK, Intent().putExtra(EXTRA_PLATFORM, platform.name))
-                Toast.makeText(this, "${platform.label} session saved securely on this device.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "${platform.label} session is available in this device's private browser storage.", Toast.LENGTH_LONG).show()
                 finish()
             }
             .onFailure {
-                status.text = it.message ?: "Could not save the encrypted session."
+                status.text = it.message ?: "Could not verify the signed-in browser session."
             }
     }
 
