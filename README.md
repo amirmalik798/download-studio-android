@@ -1,4 +1,4 @@
-# Download Studio for Android — 0.1.5
+# Download Studio for Android — 0.1.6
 
 A native Android media-downloader interface. Download Studio receives media URLs through Android's Share sheet and delegates extraction, downloading and processing to yt-dlp and FFmpeg running locally in Termux.
 
@@ -32,6 +32,14 @@ Completed rows open through Android's default compatible app for the file MIME t
 ## Pasted-link thumbnail preview
 
 Quick Download derives YouTube thumbnails from the video ID. For other supported sites it reads public page metadata such as `og:image`, `twitter:image`, `itemprop=image`, `image_src`, or a video poster. This works on many public pages, including sites that publish standard social preview metadata. A page that requires sign-in, blocks automated requests, builds metadata only with JavaScript, or does not publish an image may not return a preview. The preview lookup is separate from the downloader and does not pass login cookies to Termux.
+
+## Quick Download preview
+
+Paste a URL or use the Paste button. Download Studio first asks yt-dlp for media metadata using `--skip-download --dump-single-json`; this does not download the media file. That extractor path is useful for sites such as Facebook whose page HTML may not expose a usable Open Graph thumbnail. If the extractor does not return an image, the app checks public Open Graph, Twitter Card, schema image, image_src and video-poster metadata.
+
+Preview lookups are time-limited, run off the UI thread, and only accept public HTTPS source/image hosts. They pass no account cookies or browser sessions to Termux. A preview is not guaranteed for login-protected pages, challenge pages, JavaScript-only pages, or unsupported extractors. When a thumbnail is unavailable, the preview shows a clear fallback instead of a broken image.
+
+The two download choices remain intentionally simple: **Best available video + audio** or **Best available audio** (saved as MP3). The last choice is remembered. No manual resolution or bitrate menu is provided.
 
 ## YouTube sharing
 
