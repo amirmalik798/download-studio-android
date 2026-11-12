@@ -98,7 +98,7 @@ object TermuxBridge {
      */
     fun authenticatedDownloadScript(id: String, url: String, mode: String, destination: String, cookiesSourcePath: String): String {
         val q = ::shellQuote
-        val cookieDir = "$HOME/.config/download-studio"
+        val cookieDir = "\$HOME/.config/download-studio"
         val cookieFile = "$cookieDir/$id.cookies"
         val log = "$destination/DownloadStudioState/$id.log"
         val exit = "$destination/DownloadStudioState/$id.exit"
