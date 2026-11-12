@@ -924,42 +924,189 @@ private fun resolvePageThumbnail(rawUrl: String): String? = runCatching {
     null
 }.getOrNull()
 
+private data class PreviewMetadata(
+    val title: String = "",
+    val thumbnailUrl: String = "",
+    val durationSeconds: Long = 0L
+)
+
+private fun mediaSiteName(rawUrl: String): String {
+    val host = runCatching { Uri.parse(rawUrl).host?.lowercase(Locale.ROOT)?.removePrefix("www.") }.getOrNull().orEmpty()
+    return when {
+        host == "youtu.be" || host.endsWith("youtube.com") -> "YouTube"
+        host == "facebook.com" || host.endsWith(".facebook.com") || host.endsWith("fb.watch") -> "Facebook"
+        host == "instagram.com" || host.endsWith(".instagram.com") -> "Instagram"
+        host == "tiktok.com" || host.endsWith(".tiktok.com") -> "TikTok"
+        host == "x.com" || host.endsWith(".x.com") || host == "twitter.com" || host.endsWith(".twitter.com") -> "X"
+        host == "vimeo.com" || host.endsWith(".vimeo.com") -> "Vimeo"
+        host == "reddit.com" || host.endsWith(".reddit.com") -> "Reddit"
+        host == "pinterest.com" || host.endsWith(".pinterest.com") -> "Pinterest"
+        host.isBlank() -> "Website"
+        else -> host.removePrefix("m.").replaceFirstChar { it.titlecase(Locale.ROOT) }
+    }
+}
+
+private fun safePreviewImageUrl(raw: String): String {
+    val value = raw.trim().let { if (it.startsWith("//")) "https:$it" else it }
+    val normalized = if (value.startsWith("http://", true)) "https://" + value.substringAfter("://") else value
+    return normalized.takeIf { runCatching { URI(it).scheme == "https" && !URI(it).host.isNullOrBlank() && URI(it).userInfo == null }.getOrDefault(false) }.orEmpty()
+}
+
+private fun parsePreviewResult(raw: String): PreviewMetadata {
+    val lines = raw.lineSequence().toList()
+    val title = lines.lastOrNull { it.startsWith("DS_TITLE:") }?.substringAfter("DS_TITLE:")?.trim().orEmpty()
+    val thumbnail = lines.lastOrNull { it.startsWith("DS_THUMBNAIL:") }?.substringAfter("DS_THUMBNAIL:")?.trim()
+        ?.let(::safePreviewImageUrl).orEmpty()
+    val duration = lines.lastOrNull { it.startsWith("DS_DURATION:") }?.substringAfter("DS_DURATION:")?.trim()
+        ?.toDoubleOrNull()?.toLong()?.coerceAtLeast(0L) ?: 0L
+    return PreviewMetadata(title = title, thumbnailUrl = thumbnail, durationSeconds = duration)
+}
+
+/**
+ * Reuse yt-dlp's site extractor for a metadata-only lookup. It is the same extractor
+ * that later supplies DS_THUMBNAIL during a real download, but --skip-download ensures
+ * this preview step never downloads the media file.
+ */
+private suspend fun resolveDownloaderPreview(
+    context: android.content.Context,
+    rawUrl: String
+): PreviewMetadata {
+    val destination = StorageAccess.destinationPath(context) ?: return PreviewMetadata()
+    if (!TermuxBridge.isInstalled(context) || !TermuxBridge.hasRunPermission(context)) return PreviewMetadata()
+
+    val requestId = java.util.UUID.randomUUID().toString().replace("-", "")
+    val statePath = "DownloadStudioState/preview-$requestId.txt"
+    val script = TermuxBridge.previewMetadataScript(requestId, rawUrl, destination)
+    val launch = withContext(Dispatchers.IO) {
+        TermuxBridge.runShell(context, script, "Download Studio · preview lookup", true)
+    }
+    if (launch.isFailure) return PreviewMetadata()
+
+    repeat(62) {
+        delay(400)
+        val state = withContext(Dispatchers.IO) { StorageAccess.readState(context, statePath) }
+        if (!state.isNullOrBlank() && state.contains("DS_DONE")) {
+            withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
+            return parsePreviewResult(state)
+        }
+    }
+    withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
+    return PreviewMetadata()
+}
+
+private fun resolvePageMetadata(rawUrl: String): PreviewMetadata = runCatching {
+    var currentUrl = rawUrl
+    for (attempt in 0 until 5) {
+        if (!isPublicHttpsUrl(currentUrl)) return@runCatching PreviewMetadata()
+        val response = Jsoup.connect(currentUrl)
+            .userAgent("Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36")
+            .timeout(8_000)
+            .maxBodySize(1_000_000)
+            .followRedirects(false)
+            .ignoreHttpErrors(true)
+            .execute()
+        if (response.statusCode() in 300..399) {
+            val location = response.header("location") ?: return@runCatching PreviewMetadata()
+            currentUrl = URI(currentUrl).resolve(location).toString()
+            continue
+        }
+        if (response.statusCode() !in 200..299) return@runCatching PreviewMetadata()
+        val document = response.parse()
+        val title = listOf(
+            document.selectFirst("meta[property=og:title]")?.attr("content"),
+            document.selectFirst("meta[name=twitter:title]")?.attr("content"),
+            document.selectFirst("meta[name=title]")?.attr("content"),
+            document.title()
+        ).firstOrNull { !it.isNullOrBlank() }?.trim().orEmpty()
+        val candidates = listOf(
+            document.selectFirst("meta[property=og:image]")?.attr("content"),
+            document.selectFirst("meta[property=og:image:secure_url]")?.attr("content"),
+            document.selectFirst("meta[name=twitter:image]")?.attr("content"),
+            document.selectFirst("meta[name=twitter:image:src]")?.attr("content"),
+            document.selectFirst("meta[itemprop=image]")?.attr("content"),
+            document.selectFirst("link[rel=image_src]")?.attr("href"),
+            document.selectFirst("video[poster]")?.attr("poster")
+        )
+        var thumbnail = ""
+        for (candidate in candidates) {
+            if (candidate.isNullOrBlank()) continue
+            val resolved = safePreviewImageUrl(URI(currentUrl).resolve(candidate.trim()).toString())
+            if (resolved.isNotBlank() && isPublicHttpsUrl(resolved)) {
+                thumbnail = resolved
+                break
+            }
+        }
+        val duration = listOf(
+            document.selectFirst("meta[property=video:duration]")?.attr("content"),
+            document.selectFirst("meta[itemprop=duration]")?.attr("content")
+        ).firstNotNullOfOrNull { it?.trim()?.toDoubleOrNull()?.toLong() }?.coerceAtLeast(0L) ?: 0L
+        return@runCatching PreviewMetadata(title, thumbnail, duration)
+    }
+    PreviewMetadata()
+}.getOrDefault(PreviewMetadata())
+
+private fun formatPreviewDuration(seconds: Long): String {
+    if (seconds <= 0L) return ""
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
+    val remainder = seconds % 60
+    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, remainder)
+    else "%d:%02d".format(minutes, remainder)
+}
+
 @Composable
 private fun VideoThumbnailPreview(rawUrl: String) {
+    val context = LocalContext.current
     val cleanUrl = rawUrl.trim()
     if (!cleanUrl.startsWith("https://", ignoreCase = true) &&
         !cleanUrl.startsWith("http://", ignoreCase = true)) return
 
-    var thumbnailUrl by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(false) }
-    var lookupFailed by remember { mutableStateOf(false) }
-    var imageLoaded by remember { mutableStateOf(false) }
-    var imageFailed by remember { mutableStateOf(false) }
+    val siteName = remember(cleanUrl) { mediaSiteName(cleanUrl) }
+    var metadata by remember(cleanUrl) {
+        mutableStateOf(PreviewMetadata(thumbnailUrl = youtubeThumbnailUrl(cleanUrl).orEmpty()))
+    }
+    var loading by remember(cleanUrl) { mutableStateOf(false) }
+    var lookupFailed by remember(cleanUrl) { mutableStateOf(false) }
+    var imageLoaded by remember(cleanUrl) { mutableStateOf(false) }
+    var imageFailed by remember(cleanUrl) { mutableStateOf(false) }
 
     LaunchedEffect(cleanUrl) {
-        thumbnailUrl = null
-        loading = false
+        metadata = PreviewMetadata(thumbnailUrl = youtubeThumbnailUrl(cleanUrl).orEmpty())
+        loading = true
         lookupFailed = false
         imageLoaded = false
         imageFailed = false
-        if (cleanUrl.isBlank()) return@LaunchedEffect
+        delay(650)
 
-        val youtubeThumbnail = youtubeThumbnailUrl(cleanUrl)
-        if (youtubeThumbnail != null) {
-            thumbnailUrl = youtubeThumbnail
-            return@LaunchedEffect
-        }
-
-        if (!cleanUrl.startsWith("https://", ignoreCase = true)) {
+        val isSafeUrl = withContext(Dispatchers.IO) { isPublicHttpsUrl(cleanUrl) }
+        if (!isSafeUrl) {
             lookupFailed = true
+            loading = false
             return@LaunchedEffect
         }
 
-        delay(450)
-        loading = true
-        val resolved = withContext(Dispatchers.IO) { resolvePageThumbnail(cleanUrl) }
-        thumbnailUrl = resolved
-        lookupFailed = resolved == null
+        // Prefer yt-dlp metadata: it understands extractor-specific pages such as
+        // Facebook watch/reel URLs that often hide their og:image from simple HTML fetches.
+        val extracted = resolveDownloaderPreview(context, cleanUrl)
+        if (extracted.thumbnailUrl.isNotBlank() || extracted.title.isNotBlank()) {
+            metadata = PreviewMetadata(
+                title = extracted.title,
+                thumbnailUrl = extracted.thumbnailUrl.ifBlank { metadata.thumbnailUrl },
+                durationSeconds = extracted.durationSeconds
+            )
+        }
+
+        // Generic public-page metadata remains a fallback for sites not yet supported
+        // by yt-dlp or pages that publish standard social preview tags.
+        if (metadata.thumbnailUrl.isBlank() || metadata.title.isBlank()) {
+            val page = withContext(Dispatchers.IO) { resolvePageMetadata(cleanUrl) }
+            metadata = PreviewMetadata(
+                title = metadata.title.ifBlank { page.title },
+                thumbnailUrl = metadata.thumbnailUrl.ifBlank { page.thumbnailUrl },
+                durationSeconds = metadata.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds
+            )
+        }
+        lookupFailed = metadata.thumbnailUrl.isBlank()
         loading = false
     }
 
@@ -971,37 +1118,59 @@ private fun VideoThumbnailPreview(rawUrl: String) {
             .background(Color(0xFF0C1525)),
         contentAlignment = Alignment.Center
     ) {
-        if (thumbnailUrl == null || !imageLoaded || imageFailed) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Icon(
-                    Icons.Default.VideoLibrary,
-                    contentDescription = null,
-                    tint = Cyan,
-                    modifier = Modifier.size(30.dp)
-                )
-                Text(
-                    when {
-                        loading -> "Finding video thumbnail…"
-                        lookupFailed || imageFailed -> "No preview image found for this link"
-                        else -> "Preparing video preview…"
-                    },
-                    color = TextMuted,
-                    fontSize = 11.sp
-                )
-            }
-        }
-        thumbnailUrl?.let { image ->
+        if (metadata.thumbnailUrl.isNotBlank() && !imageFailed) {
             AsyncImage(
-                model = image,
-                contentDescription = "Video thumbnail preview",
+                model = metadata.thumbnailUrl,
+                contentDescription = "$siteName video thumbnail",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
                 onSuccess = { imageLoaded = true },
                 onError = { imageFailed = true }
             )
+        }
+
+        if (!imageLoaded || imageFailed) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Default.VideoLibrary,
+                    contentDescription = null,
+                    tint = Cyan,
+                    modifier = Modifier.size(32.dp)
+                )
+                Text(
+                    when {
+                        loading -> "Finding preview from $siteName…"
+                        lookupFailed || imageFailed -> "Preview image isn't available for this link"
+                        else -> "Preparing preview…"
+                    },
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Ink.copy(alpha = .9f))))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(siteName.uppercase(Locale.ROOT), color = Cyan, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
+                    val duration = formatPreviewDuration(metadata.durationSeconds)
+                    if (duration.isNotBlank()) {
+                        Spacer(Modifier.weight(1f))
+                        Text(duration, color = TextMain, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                if (metadata.title.isNotBlank()) {
+                    Text(metadata.title, color = TextMain, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
     }
 }
