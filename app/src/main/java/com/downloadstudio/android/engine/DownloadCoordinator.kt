@@ -152,6 +152,25 @@ object DownloadCoordinator {
         signal(id, "CONT")
     }
 
+    /** Re-queue a failed or stopped item without changing its original URL or mode. */
+    fun retry(id: String) {
+        val item = _items.value.firstOrNull { it.id == id } ?: return
+        if (item.status !in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED)) return
+        cancelled.remove(id)
+        thermalDeferred.remove(id)
+        update(id) {
+            it.copy(
+                status = DownloadStatus.QUEUED,
+                progress = 0f,
+                speed = "—",
+                eta = "—",
+                downloaded = "—",
+                error = ""
+            )
+        }
+        pump()
+    }
+
     fun stop(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
         val running = item.status in setOf(
@@ -304,7 +323,8 @@ object DownloadCoordinator {
                             val l = line.lowercase()
                             l.contains("error:") || l.contains("unable to") || l.contains("unsupported url") || l.contains("http error")
                         }?.take(320).orEmpty()
-                        update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = errorLine.ifBlank { "yt-dlp exited with code $code. Check Termux setup and the activity log." }) }
+                        val friendly = friendlyDownloadError(errorLine, code)
+                        update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = friendly) }
                     }
                     break
                 }
@@ -442,6 +462,27 @@ object DownloadCoordinator {
     private fun persist() {
         synchronized(stateLock) {
             QueueStore.save(appContext, _items.value)
+        }
+    }
+
+    private fun friendlyDownloadError(raw: String, exitCode: Int): String {
+        val message = raw.lowercase(Locale.ROOT)
+        return when {
+            message.contains("unsupported url") || message.contains("not a valid url") ->
+                "This website or link type is not supported by the download engine yet."
+            message.contains("private video") || message.contains("sign in") || message.contains("login") ||
+                message.contains("authentication") || message.contains("cookies") ->
+                "This media may require sign-in or may not be publicly accessible. Try a public link you are allowed to download."
+            message.contains("http error 403") || message.contains("forbidden") ->
+                "The website refused this request. The link may be restricted or have expired."
+            message.contains("http error 404") || message.contains("not found") ->
+                "The media could not be found. Check that the link is still available."
+            message.contains("http error 429") || message.contains("too many requests") ->
+                "The website is temporarily limiting requests. Please try again later."
+            message.contains("geo") && (message.contains("block") || message.contains("restrict")) ->
+                "This media is not available from your current region."
+            raw.isNotBlank() -> raw
+            else -> "The download engine stopped with code $exitCode. Check the Termux engine status in Settings, then retry."
         }
     }
 
