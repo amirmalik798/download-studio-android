@@ -96,7 +96,7 @@ object TermuxBridge {
             "--print ${q("before_dl:DS_THUMBNAIL:%(thumbnail)s")} " +
             "--print ${q("after_move:DS_COMPLETE:%(filepath)s")}"
         val preset = if (mode == "AUDIO") {
-            "-f bestaudio --extract-audio --audio-quality 0 --audio-format mp3 --embed-thumbnail"
+            "-f bestaudio/best --extract-audio --audio-quality 0 --audio-format mp3 --embed-thumbnail"
         } else {
             // Select the highest-ranked separate video and audio streams yt-dlp can provide.
             // Fall back to the best combined format when separate streams are unavailable.
