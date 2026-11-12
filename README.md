@@ -1,4 +1,4 @@
-# Download Studio for Android — 0.1.4
+# Download Studio for Android — 0.1.5
 
 A native Android media-downloader interface. Download Studio receives media URLs through Android's Share sheet and delegates extraction, downloading and processing to yt-dlp and FFmpeg running locally in Termux.
 
@@ -26,6 +26,20 @@ Search checks the displayed title. For old entries still labelled Shared media, 
 Date sorting uses the completion timestamp for files completed in v0.1.4 and later. Existing records that predate this field fall back to their original creation time because their historic completion time was not stored.
 
 Completed rows open through Android's default compatible app for the file MIME type. The file is resolved inside the user-selected SAF download folder and the app grants a temporary read URI permission. If the file is missing or no compatible app is installed, Download Studio displays an error.
+
+## Authenticated Facebook and Instagram sessions
+
+Download Studio can optionally use a session that the user signs into and saves inside the app's private in-app browser:
+
+1. Open Settings → Authenticated Media Sessions.
+2. Choose Connect Facebook or Connect Instagram.
+3. Sign in on the platform's own HTTPS login page inside Download Studio.
+4. Tap **Save session**. The app checks for the expected signed-in session cookies before accepting it.
+5. A download from the matching platform automatically uses that saved session when yt-dlp supports the URL.
+
+Session cookie jars are encrypted with AES-GCM using an Android Keystore key. They are not written into the download queue or logs. For an authenticated download, Download Studio creates a short-lived transfer file in the user-selected SAF folder; the Termux command moves it into Termux-private storage with mode 600, deletes the shared copy, passes it to yt-dlp with `--cookies`, and removes the private copy when the command exits. Download Studio also attempts to remove the temporary transfer file if the command cannot start. Disconnecting a platform removes its encrypted saved session and clears that platform's cookies from the in-app WebView.
+
+**Browser-session scope and limitations:** these are sessions created inside Download Studio's WebView. Android does not let Download Studio read the private session databases of the separately installed Facebook or Instagram apps. Meta may restrict sign-in inside embedded browsers or challenge the login; if that happens, authenticated extraction may not be available. A signed-in session does not guarantee access to every story, private post, region-restricted item, or unsupported extractor. Download Studio does not bypass DRM, access controls, or private-content restrictions.
 
 ## YouTube sharing
 
