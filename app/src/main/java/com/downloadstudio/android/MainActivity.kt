@@ -301,7 +301,16 @@ private fun HomeScreen(
                     )
                     VideoThumbnailPreview(url)
                     ModeSelector(mode, onMode)
-                    Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Blue)) {
+                    Button(
+                        onClick = onAdd,
+                        enabled = runCatching {
+                            val uri = Uri.parse(url.trim())
+                            (uri.scheme == "https" || uri.scheme == "http") && !uri.host.isNullOrBlank()
+                        }.getOrDefault(false),
+                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Blue)
+                    ) {
                         Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Add download", fontWeight = FontWeight.Bold)
                     }
                     Text(
@@ -328,7 +337,7 @@ private fun HomeScreen(
             }
         }
         if (items.isEmpty()) {
-            item { EmptyState("Nothing downloading yet", "Paste a link above, or open YouTube → Share → Download Studio.", Icons.Default.VideoLibrary) }
+            item { EmptyState("Nothing downloading yet", "Paste a media link above, or use Share in another app and choose Download Studio.", Icons.Default.VideoLibrary) }
         } else {
             lazyItems(items.sortedByDescending { it.createdAt }.take(3), key = { it.id }) { item -> DownloadRow(item, onClick = { onOpenItem(item) }) }
         }
@@ -486,7 +495,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
         }
         Spacer(Modifier.height(5.dp))
         when {
-            items.isEmpty() -> EmptyState("No downloads yet", "Paste a link or use YouTube → Share → Download Studio.", Icons.Default.CloudDownload)
+            items.isEmpty() -> EmptyState("No downloads yet", "Paste a link or share a supported media URL from another app.", Icons.Default.CloudDownload)
             visibleItems.isEmpty() -> EmptyState("No matching downloads", "Try another search term or category filter.", Icons.Default.Search)
             else -> LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
                 lazyItems(visibleItems, key = { it.id }) { item ->
@@ -589,7 +598,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
             } else if (item.error.isNotBlank()) {
                 Text(friendlyError(item.error), color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             } else {
-                Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best audio extracted to MP3", color = TextMuted, fontSize = 10.sp)
+                Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3", color = TextMuted, fontSize = 10.sp)
             }
         }
     }
@@ -902,8 +911,12 @@ private fun friendlyError(raw: String): String {
         message.contains("timed out") || message.contains("timeout") ||
             message.contains("connection reset") || message.contains("network is unreachable") ->
             "The website took too long to respond. Check your connection and try again."
+        message.contains("http error 429") || message.contains("too many requests") ->
+            "The website is temporarily limiting requests. Wait a little and try again."
         message.contains("termux") || message.contains("run commands") ->
             "The download engine couldn't start. Open Settings and check the Termux connection."
+        message.contains("ffmpeg") || message.contains("postprocessing") ->
+            "The media was found, but final processing failed. Check FFmpeg in Settings."
         message.contains("yt-dlp exited") || message.contains("exit code") ->
             "The download couldn't be completed. Check your connection or try again."
         value.isBlank() -> "Something went wrong. Please try again."
