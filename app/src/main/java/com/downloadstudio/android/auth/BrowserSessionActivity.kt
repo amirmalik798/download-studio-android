@@ -111,7 +111,7 @@ class BrowserSessionActivity : Activity() {
     }
 
     private fun isAllowedPlatformUrl(uri: Uri): Boolean {
-        if (uri.scheme != "https" && uri.scheme != "http") return true
+        if (uri.scheme != "https") return false
         val host = uri.host?.lowercase().orEmpty()
         return when (platform) {
             BrowserSessionStore.Platform.FACEBOOK ->
@@ -147,7 +147,7 @@ class BrowserSessionActivity : Activity() {
                 if (split > 0) {
                     val name = trimmed.substring(0, split).trim()
                     val value = trimmed.substring(split + 1).trim()
-                    if (name.matches(Regex("[A-Za-z0-9_]+")) && value.isNotEmpty()) {
+                    if (name.matches(Regex("[A-Za-z0-9_]+")) && value.isNotEmpty() && value.none { it.isWhitespace() }) {
                         cookies[name] = value
                     }
                 }
