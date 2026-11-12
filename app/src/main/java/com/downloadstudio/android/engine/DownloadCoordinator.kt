@@ -414,8 +414,15 @@ object DownloadCoordinator {
         if (!mediaTitle.isNullOrBlank() || !thumbnailUrl.isNullOrBlank()) {
             update(id) { current ->
                 current.copy(
-                    title = mediaTitle?.takeIf { it.isNotBlank() } ?: current.title,
-                    thumbnailUrl = thumbnailUrl?.takeIf { it.startsWith("https://") || it.startsWith("http://") } ?: current.thumbnailUrl
+                    // A social page's human-readable title is more useful than a CDN URL's generic filename.
+                    title = if (current.sourceUrl != current.url && current.title.isNotBlank()) {
+                        current.title
+                    } else {
+                        mediaTitle?.takeIf { it.isNotBlank() } ?: current.title
+                    },
+                    thumbnailUrl = current.thumbnailUrl.ifBlank {
+                        thumbnailUrl?.takeIf { it.startsWith("https://") || it.startsWith("http://") }.orEmpty()
+                    }
                 )
             }
         }
