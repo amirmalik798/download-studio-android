@@ -66,6 +66,7 @@ private val Red = Color(0xFFFF7185)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        BrowserSessionStore.purgeLegacyCookieCopies(this)
         window.statusBarColor = android.graphics.Color.rgb(9, 14, 25)
         window.navigationBarColor = android.graphics.Color.rgb(9, 14, 25)
         DownloadCoordinator.initialize(this)
