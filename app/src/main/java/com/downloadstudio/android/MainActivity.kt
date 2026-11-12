@@ -249,6 +249,7 @@ private fun HomeScreen(
                             cursorColor = Cyan, focusedContainerColor = Color(0xFF0C1525), unfocusedContainerColor = Color(0xFF0C1525)
                         )
                     )
+                    VideoThumbnailPreview(url)
                     ModeSelector(mode, onMode)
                     Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Blue)) {
                         Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Add download", fontWeight = FontWeight.Bold)
@@ -805,6 +806,41 @@ private fun youtubeVideoId(rawUrl: String): String? = runCatching {
 
 private fun youtubeThumbnailUrl(rawUrl: String): String? = youtubeVideoId(rawUrl)?.let {
     "https://i.ytimg.com/vi/$it/hqdefault.jpg"
+}
+
+@Composable
+private fun VideoThumbnailPreview(rawUrl: String) {
+    val thumbnailUrl = remember(rawUrl) { youtubeThumbnailUrl(rawUrl.trim()) } ?: return
+    var loaded by remember(thumbnailUrl) { mutableStateOf(false) }
+    var failed by remember(thumbnailUrl) { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(190.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0xFF0C1525)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (!loaded) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(Icons.Default.VideoLibrary, contentDescription = null, tint = Cyan, modifier = Modifier.size(30.dp))
+                Text(
+                    if (failed) "Thumbnail unavailable" else "Loading video preview…",
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
+            }
+        }
+        AsyncImage(
+            model = thumbnailUrl,
+            contentDescription = "Video thumbnail preview",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+            onSuccess = { loaded = true },
+            onError = { failed = true }
+        )
+    }
 }
 
 private fun displayTitle(item: DownloadItem): String {
