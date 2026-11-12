@@ -47,8 +47,8 @@ object TermuxBridge {
         val state = "${destination.trimEnd('/')}/DownloadStudioState"
         val report = "$state/engine.txt"
         return "mkdir -p ${shellQuote(state)}; " +
-            "{ if command -v yt-dlp >/dev/null 2>&1; then printf 'yt-dlp: READY (%s)\\n' \"$(yt-dlp --version 2>/dev/null)\"; else printf 'yt-dlp: MISSING\\n'; fi; " +
-            "if command -v ffmpeg >/dev/null 2>&1; then printf 'ffmpeg: READY (%s)\\n' \"$(ffmpeg -version 2>/dev/null | head -n 1)\"; else printf 'ffmpeg: MISSING\\n'; fi; } > ${shellQuote(report)}"
+            "{ if command -v yt-dlp >/dev/null 2>&1; then printf 'yt-dlp: READY (%s)\\n' \"\$(yt-dlp --version 2>/dev/null)\"; else printf 'yt-dlp: MISSING\\n'; fi; " +
+            "if command -v ffmpeg >/dev/null 2>&1; then printf 'ffmpeg: READY (%s)\\n' \"\$(ffmpeg -version 2>/dev/null | head -n 1)\"; else printf 'ffmpeg: MISSING\\n'; fi; } > ${shellQuote(report)}"
     }
 
     /**
