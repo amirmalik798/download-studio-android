@@ -153,7 +153,9 @@ class BrowserMediaResolverActivity : Activity() {
                 completeResolution(
                     mediaUrl,
                     payload?.optString("title").orEmpty().take(160).ifBlank { "Social media video" },
-                    payload?.optString("thumbnail").orEmpty()
+                    payload?.optString("thumbnail").orEmpty().takeIf {
+                        isAllowedThumbnailUrl(Uri.parse(it))
+                    }.orEmpty()
                 )
             } else {
                 status.text = when {
@@ -209,6 +211,14 @@ class BrowserMediaResolverActivity : Activity() {
         val path = uri.path.orEmpty().lowercase()
         return allowedHost && (path.contains(".mp4") || path.contains(".m4v") ||
             path.contains(".m3u8") || path.contains(".mpd"))
+    }
+
+    private fun isAllowedThumbnailUrl(uri: Uri): Boolean {
+        if (uri.scheme != "https" || uri.userInfo != null) return false
+        val host = uri.host?.lowercase().orEmpty()
+        return host == "fbcdn.net" || host.endsWith(".fbcdn.net") ||
+            host == "fbsbx.com" || host.endsWith(".fbsbx.com") ||
+            host == "cdninstagram.com" || host.endsWith(".cdninstagram.com")
     }
 
     override fun onDestroy() {
