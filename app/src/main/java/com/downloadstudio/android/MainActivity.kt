@@ -761,6 +761,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                         if (dest.isNullOrBlank()) engineStatus = "Choose a Downloads folder first"
                         else {
                             engineStatus = "Checking…"
+                            StorageAccess.deleteState(context, "DownloadStudioState/engine.txt")
                             val result = TermuxBridge.runShell(context, TermuxBridge.engineCheckScript(dest), "Download Studio · engine check", true)
                             if (result.isFailure) engineStatus = result.exceptionOrNull()?.message ?: "Could not check Termux"
                         }
@@ -809,7 +810,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
             repeat(15) {
                 val report = StorageAccess.readState(context, "DownloadStudioState/engine.txt")
                 if (!report.isNullOrBlank()) {
-                    engineStatus = report.trim().replace("\\n", " · ")
+                    engineStatus = report.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.joinToString(" · ")
                     return@LaunchedEffect
                 }
                 delay(1_000)
@@ -849,7 +850,7 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
         title = { Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best audio · MP3")
+                DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3")
                 DetailLine("Status", friendlyStatus(item.status))
                 DetailLine("Download date", formatDownloadDate(item))
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
