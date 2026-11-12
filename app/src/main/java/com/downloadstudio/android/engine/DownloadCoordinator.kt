@@ -173,7 +173,7 @@ object DownloadCoordinator {
     fun retry(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
         if (item.status !in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED)) return
-        if (id in active) {
+        if (active.containsKey(id)) {
             update(id) { it.copy(error = "This download is still stopping. Try again in a moment.") }
             return
         }
