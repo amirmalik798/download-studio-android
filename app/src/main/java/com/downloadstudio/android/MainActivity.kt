@@ -695,7 +695,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
         item {
             SettingsCard("ABOUT DOWNLOAD STUDIO", "Local media downloader") {
                 Text("Developed by Amir Malik (2026)", color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Text("Version 0.1.4", color = TextMuted, fontSize = 10.sp)
+                Text("Version 0.1.5", color = TextMuted, fontSize = 10.sp)
             }
         }
         item {
