@@ -98,9 +98,9 @@ object TermuxBridge {
         val preset = if (mode == "AUDIO") {
             "-f bestaudio --extract-audio --audio-quality 0 --audio-format mp3 --embed-thumbnail"
         } else {
-            // Preset copied semantically from the supplied Media Downloader yt-dlp extension:
-            // best H.264/MP4 video + M4A audio, then progressively broader fallbacks.
-            "-f ${q("bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best")}"
+            // Select the highest-ranked separate video and audio streams yt-dlp can provide.
+            // Fall back to the best combined format when separate streams are unavailable.
+            "-f ${q("bestvideo+bestaudio/best")}"
         }
         return "mkdir -p " + q(destination) + " " + q(stateDir) + "; " +
             "rm -f " + q(log) + " " + q(exit) + " " + q(pid) + "; " +
