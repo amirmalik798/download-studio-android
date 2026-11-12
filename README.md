@@ -1,4 +1,4 @@
-# Download Studio for Android — 0.1.4
+# Download Studio for Android — 0.1.5
 
 A native Android media-downloader interface. Download Studio receives media URLs through Android's Share sheet and delegates extraction, downloading and processing to yt-dlp and FFmpeg running locally in Termux.
 
@@ -10,7 +10,9 @@ A native Android media-downloader interface. Download Studio receives media URLs
 - Sort by name A–Z, name Z–A, newest download date, or oldest download date.
 - Filter downloads by All, Video, or Audio.
 - Actual media titles printed by yt-dlp before download and displayed instead of the generic Shared media label.
-- YouTube thumbnails and explicit VIDEO/AUDIO labels in the list.
+- YouTube thumbnails in the Downloads list and a large 16:9 Quick Download preview for YouTube plus other HTTPS pages that expose Open Graph, Twitter Card, image metadata, or a video poster.
+- Thumbnail metadata lookup follows a small number of HTTPS redirects, limits downloaded HTML, and rejects private/local network destinations; it does not export account cookies or use the Termux session.
+- Explicit VIDEO/AUDIO labels in the Downloads list.
 - Tapping a completed item opens its saved file using Android's ACTION_VIEW and the file's detected MIME type; Android chooses the compatible app.
 - Queue/download details remain available for unfinished or failed items.
 - Termux RUN_COMMAND integration; yt-dlp and FFmpeg execute on the phone.
@@ -26,6 +28,10 @@ Search checks the displayed title. For old entries still labelled Shared media, 
 Date sorting uses the completion timestamp for files completed in v0.1.4 and later. Existing records that predate this field fall back to their original creation time because their historic completion time was not stored.
 
 Completed rows open through Android's default compatible app for the file MIME type. The file is resolved inside the user-selected SAF download folder and the app grants a temporary read URI permission. If the file is missing or no compatible app is installed, Download Studio displays an error.
+
+## Pasted-link thumbnail preview
+
+Quick Download derives YouTube thumbnails from the video ID. For other supported sites it reads public page metadata such as `og:image`, `twitter:image`, `itemprop=image`, `image_src`, or a video poster. This works on many public pages, including sites that publish standard social preview metadata. A page that requires sign-in, blocks automated requests, builds metadata only with JavaScript, or does not publish an image may not return a preview. The preview lookup is separate from the downloader and does not pass login cookies to Termux.
 
 ## YouTube sharing
 
