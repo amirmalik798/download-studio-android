@@ -29,7 +29,7 @@ def main() -> int:
     require('id("com.android.application") version "8.13.2"' in root_build, "Unexpected Android Gradle Plugin")
     require('id("org.jetbrains.kotlin.android") version "2.2.10"' in root_build, "Unexpected Kotlin plugin")
     require("compileSdk = 36" in app_build and "minSdk = 26" in app_build, "Unexpected SDK configuration")
-    require('versionName = "0.1.6"' in app_build and "versionCode = 7" in app_build, "Version not bumped to 0.1.6")
+    require('versionName = "0.1.7"' in app_build and "versionCode = 8" in app_build, "Version not bumped to 0.1.7")
     require("coil-compose" in app_build and "AsyncImage" in main_activity, "Coil thumbnail support missing")
     require("youtubeThumbnailUrl" in main_activity and "resolvePageMetadata" in main_activity and "og:image" in main_activity and "twitter:image" in main_activity and "VideoThumbnailPreview(url)" in main_activity and "height(190.dp)" in main_activity and "jsoup" in app_build and '"VIDEO"' in main_activity and '"AUDIO"' in main_activity, "Multi-site pasted URL thumbnail preview/type labels missing")
     require("previewMetadataScript" in termux and "--skip-download --dump-single-json" in termux and "DS_THUMBNAIL:" in termux and "DS_DONE" in termux, "Metadata-only yt-dlp preview fallback missing")
@@ -60,7 +60,18 @@ def main() -> int:
     require("readStateTail" in coordinator and "fun readStateTail" in storage, "Tail-only log polling missing")
     require("current.status == DownloadStatus.QUEUED) current" in coordinator, "Progress parser status guard is malformed or missing")
     require("while (true)" not in coordinator and "while (true)" not in main_activity, "Unbounded polling loop remains")
-    require('bestvideo+bestaudio/best' in termux and '-f bestaudio/best --extract-audio --audio-quality 0 --audio-format mp3' in termux, "Best-available video/audio selectors missing")
+    require('bestvideo*+bestaudio/best' in termux and 'bestaudio/best' in termux and '--audio-quality 0 --audio-format mp3' in termux, "Best-available video/audio selectors missing")
+    manifest_text = (ROOT / "app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+    require("com.sec.android.app.myfiles" in manifest_text and "com.alphainventor.filemanager" in manifest_text,
+            "File manager package visibility missing")
+    require("vnd.android.document/directory" in manifest_text and
+            "org.openintents.extra.ABSOLUTE_PATH" in main_activity and
+            "Intent.createChooser(directoryIntent" in main_activity,
+            "Folder open handoff or file-manager chooser missing")
+    require("containerColor = Panel2" in main_activity and
+            "BorderStroke(1.dp, Line)" in main_activity and
+            'Text("Copy source link", color = TextMain' in main_activity,
+            "Download actions menu does not use the app theme")
     require("--concurrent-fragments 1" in termux, "yt-dlp fragment concurrency limit missing")
     require("ds_watch_ticks" in termux and "-lt 360" in termux and "sleep 60" in termux, "Termux bounded watchdog missing")
     require("pkg install -y python ffmpeg coreutils procps" in termux, "Termux coreutils/procps packages missing")

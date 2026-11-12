@@ -96,11 +96,14 @@ object TermuxBridge {
             "--print ${q("before_dl:DS_THUMBNAIL:%(thumbnail)s")} " +
             "--print ${q("after_move:DS_COMPLETE:%(filepath)s")}"
         val preset = if (mode == "AUDIO") {
-            "-f bestaudio/best --extract-audio --audio-quality 0 --audio-format mp3 --embed-thumbnail"
+            // Choose the best audio-only format exposed by this site's yt-dlp extractor.
+            // Fall back to the best combined format if no separate audio format is offered.
+            // MP3 VBR 0 is the encoder's highest quality setting; MP3 itself remains lossy.
+            "-f ${q("bestaudio/best")} --extract-audio --audio-quality 0 --audio-format mp3 --embed-thumbnail"
         } else {
-            // Select the highest-ranked separate video and audio streams yt-dlp can provide.
-            // Fall back to the best combined format when separate streams are unavailable.
-            "-f ${q("bestvideo+bestaudio/best")}"
+            // yt-dlp's normal best-quality selector across extractors: best format containing
+            // video + best separate audio when available, with best combined format as fallback.
+            "-f ${q("bestvideo*+bestaudio/best")}"
         }
         return "mkdir -p " + q(destination) + " " + q(stateDir) + "; " +
             "rm -f " + q(log) + " " + q(exit) + " " + q(pid) + "; " +

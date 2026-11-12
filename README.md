@@ -1,4 +1,4 @@
-# Download Studio for Android — 0.1.6
+# Download Studio for Android — 0.1.7
 
 A native Android media-downloader interface. Download Studio receives media URLs through Android's Share sheet and delegates extraction, downloading and processing to yt-dlp and FFmpeg running locally in Termux.
 
@@ -39,7 +39,9 @@ Paste a URL or use the Paste button. Download Studio first asks yt-dlp for media
 
 Preview lookups are time-limited, run off the UI thread, and only accept public HTTPS source/image hosts. They pass no account cookies or browser sessions to Termux. A preview is not guaranteed for login-protected pages, challenge pages, JavaScript-only pages, or unsupported extractors. When a thumbnail is unavailable, the preview shows a clear fallback instead of a broken image.
 
-The two download choices remain intentionally simple: **Best available video + audio** or **Best available audio** (saved as MP3). Video mode asks yt-dlp for its best separate video and audio streams, falling back to the best combined format when separate streams are unavailable. Audio mode selects yt-dlp's best audio-only source, falling back to the best combined format when a separate audio stream is unavailable, then converts it to MP3 using the highest MP3 quality setting. The last choice is remembered. No manual resolution or bitrate menu is provided.
+The two download choices remain intentionally simple: **Best available video + audio** or **Best available audio** (saved as MP3). Video mode uses yt-dlp's recommended `bestvideo*+bestaudio/best` selector: it chooses the best format containing video, adds the best audio-only stream when available, and falls back to the best combined audio/video format. Audio mode selects yt-dlp's best audio-only format, falling back to the best combined format when a separate audio stream is unavailable, then converts it to MP3 with `--audio-quality 0` (the highest MP3 encoder-quality setting). MP3 is lossy, so the original stream's quality remains the upper limit. Actual formats depend on what each site's extractor exposes to the installed yt-dlp version. No site-specific resolution/codec restrictions or manual resolution/bitrate menu are used. The last choice is remembered.
+
+For **View in folder**, Download Studio sends a standard Android directory-view intent with the selected folder URI, read permission and absolute-path hint. It first tries Samsung My Files and File Manager+ when their apps declare support, otherwise shows a chooser for compatible file managers. If no file manager handles the directory intent, the Android document picker opens at the folder location.
 
 ## YouTube sharing
 
