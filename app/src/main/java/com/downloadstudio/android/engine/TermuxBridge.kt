@@ -92,22 +92,25 @@ object TermuxBridge {
      * Adds a one-shot cookie transfer to the existing download command. The temporary
      * SAF copy is moved into Termux-private storage, chmodded, and removed before yt-dlp runs.
      */
+    /**
+     * Moves the temporary SAF cookie copy into Termux-private storage before yt-dlp starts.
+     * The shared-storage copy is removed immediately and the private copy is removed on exit.
+     */
     fun authenticatedDownloadScript(id: String, url: String, mode: String, destination: String, cookiesSourcePath: String): String {
         val q = ::shellQuote
         val cookieDir = "$HOME/.config/download-studio"
         val cookieFile = "$cookieDir/$id.cookies"
         val log = "$destination/DownloadStudioState/$id.log"
         val exit = "$destination/DownloadStudioState/$id.exit"
-        val setup = "ds_cookie_dir=" + q(cookieDir) + "; mkdir -p \\"\\$ds_cookie_dir\\"; chmod 700 \\"\\$ds_cookie_dir\\"; " +
-            "ds_cookie_source=" + q(cookiesSourcePath) + "; ds_cookie_file=" + q(cookieFile) + "; " +
-            "if [ ! -f \\"\\$ds_cookie_source\\" ]; then printf '%s' 'ERROR: Temporary browser session transfer is missing.' > " + q(log) + "; printf '1' > " + q(exit) + "; exit 1; fi; " +
-            "if ! cp \\"\\$ds_cookie_source\\" \\"\\$ds_cookie_file\\"; then printf '%s' 'ERROR: Could not transfer the browser session into Termux.' > " + q(log) + "; printf '1' > " + q(exit) + "; exit 1; fi; " +
-            "chmod 600 \\"\\$ds_cookie_file\\"; rm -f \\"\\$ds_cookie_source\\"; " +
-            "trap 'rm -f \\"\\$ds_cookie_file\\"' EXIT; "
+        val setup = "mkdir -p " + q(cookieDir) + "; chmod 700 " + q(cookieDir) + "; " +
+            "if [ ! -f " + q(cookiesSourcePath) + " ]; then printf '%s' 'ERROR: Temporary browser session transfer is missing.' > " + q(log) + "; printf '1' > " + q(exit) + "; exit 1; fi; " +
+            "if ! cp " + q(cookiesSourcePath) + " " + q(cookieFile) + "; then printf '%s' 'ERROR: Could not transfer the browser session into Termux.' > " + q(log) + "; printf '1' > " + q(exit) + "; exit 1; fi; " +
+            "chmod 600 " + q(cookieFile) + "; rm -f " + q(cookiesSourcePath) + "; " +
+            "trap \\"rm -f " + q(cookieFile) + "\\" EXIT; "
         val script = downloadScript(id, url, mode, destination)
         val marker = "PYTHONUNBUFFERED=1 yt-dlp "
         check(script.contains(marker)) { "Could not prepare authenticated download command." }
-        return script.replace(marker, setup + "PYTHONUNBUFFERED=1 yt-dlp --cookies \\"\\$ds_cookie_file\\" ")
+        return script.replace(marker, setup + "PYTHONUNBUFFERED=1 yt-dlp --cookies " + q(cookieFile) + " ")
     }
     fun signalScript(destination: String, id: String, signal: String): String {
         require(signal in setOf("STOP", "CONT", "INT", "TERM"))
