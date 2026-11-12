@@ -700,7 +700,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
         }
         item {
             SettingsCard("AUTHENTICATED MEDIA SESSIONS", "Sign in inside Download Studio. Login cookies remain in Android's app-private WebView storage and are never exported to Termux. Downloads pass only the selected media's short-lived CDN URL to the downloader.") {
-                StatusLine("Facebook browser session", facebookConnected, if (facebookConnected) "Saved securely" else "Not connected")
+                StatusLine("Facebook browser session", facebookConnected, if (facebookConnected) "Connected" else "Not connected")
                 OutlinedButton(
                     onClick = { sessionLauncher.launch(BrowserSessionActivity.intent(context, BrowserSessionStore.Platform.FACEBOOK)) },
                     modifier = Modifier.fillMaxWidth()
@@ -712,7 +712,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                     }) { Text("Remove Facebook session", color = Red) }
                 }
                 Divider(color = Line)
-                StatusLine("Instagram browser session", instagramConnected, if (instagramConnected) "Saved securely" else "Not connected")
+                StatusLine("Instagram browser session", instagramConnected, if (instagramConnected) "Connected" else "Not connected")
                 OutlinedButton(
                     onClick = { sessionLauncher.launch(BrowserSessionActivity.intent(context, BrowserSessionStore.Platform.INSTAGRAM)) },
                     modifier = Modifier.fillMaxWidth()
@@ -723,7 +723,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                         instagramConnected = false
                     }) { Text("Remove Instagram session", color = Red) }
                 }
-                Text("During an authenticated download, a hidden temporary cookie file is briefly written to your selected download folder so Termux can import it, then deleted. Only supported, authorized media is downloaded. Meta may restrict embedded-browser login. Download Studio cannot access the separate Facebook or Instagram app's private storage.", color = TextMuted, fontSize = 10.sp, lineHeight = 15.sp)
+                Text("Termux never receives account cookies. It receives only a media-specific CDN link for the selected video; that link may be time-limited. Some posts and protected or segmented streams cannot be resolved. You may need to sign in again if the platform expires your session. Download Studio cannot access the separate social apps' private storage.", color = TextMuted, fontSize = 10.sp, lineHeight = 15.sp)
             }
         }
         item {
