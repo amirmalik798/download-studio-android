@@ -924,7 +924,7 @@ private suspend fun resolveTermuxPreview(context: android.content.Context, rawUr
     if (!TermuxBridge.isInstalled(context) || !TermuxBridge.hasRunPermission(context)) return null
     val destination = StorageAccess.destinationPath(context) ?: return null
     val requestId = "preview-" + UUID.randomUUID().toString().replace("-", "").take(14)
-    val relativeFile = "DownloadStudioState/$requestId.txt"
+    val relativeFile = "DownloadStudioState/preview-$requestId.txt"
     val script = TermuxBridge.thumbnailLookupScript(requestId, rawUrl, destination)
     val launched = withContext(Dispatchers.IO) {
         TermuxBridge.runShell(context, script, "Download Studio · preview lookup", true)
@@ -1015,7 +1015,7 @@ private fun VideoThumbnailPreview(rawUrl: String) {
         if (pagePreview.thumbnailUrl.isNullOrBlank()) {
             // Some social sites expose their real thumbnail through yt-dlp metadata
             // even when their public HTML page hides or omits og:image.
-            val enginePreview = resolveTermuxPreview(context, cleanUrl)
+            val enginePreview = if (isPublicHttpsUrl(cleanUrl)) resolveTermuxPreview(context, cleanUrl) else null
             if (enginePreview != null) {
                 preview = MediaPreview(
                     thumbnailUrl = enginePreview.thumbnailUrl ?: pagePreview.thumbnailUrl,
