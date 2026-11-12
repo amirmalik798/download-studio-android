@@ -952,7 +952,7 @@ private suspend fun resolveTermuxPreview(context: android.content.Context, rawUr
     }
     if (launched.isFailure) return null
     try {
-        repeat(24) {
+        repeat(30) {
             val output = withContext(Dispatchers.IO) { StorageAccess.readState(context, relativeFile) }
             if (output?.contains("DS_PREVIEW_DONE") == true) {
                 val thumbnail = output.lineSequence()
