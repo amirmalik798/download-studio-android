@@ -61,7 +61,7 @@ object TermuxBridge {
         val stateDir = "${destination.trimEnd('/')}/DownloadStudioState"
         val result = "$stateDir/preview-$id.txt"
         return "mkdir -p " + q(stateDir) + "; rm -f " + q(result) + "; " +
-            "yt-dlp --ignore-config --no-warnings --no-playlist --skip-download " +
+            "timeout --signal=TERM 13s yt-dlp --ignore-config --no-warnings --no-playlist --skip-download " +
             "--socket-timeout 8 --retries 0 --fragment-retries 0 --extractor-retries 0 " +
             "--print " + q("DS_PREVIEW_THUMB:%(thumbnail)s") + " " +
             "--print " + q("DS_PREVIEW_TITLE:%(title)s") + " " +
