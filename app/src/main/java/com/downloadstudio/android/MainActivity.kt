@@ -82,8 +82,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = scheme) {
                 DownloadStudioRoot(
                     onIncomingUrl = { url, mode ->
-                        runCatching { DownloadCoordinator.enqueue(url, mode) }
-                            .onFailure { Toast.makeText(this, it.message ?: "Could not add link", Toast.LENGTH_LONG).show() }
+                        runCatching { DownloadCoordinator.enqueue(url, mode); Unit }
                     }
                 )
             }
@@ -102,7 +101,7 @@ class MainActivity : ComponentActivity() {
             Intent.ACTION_VIEW -> intent.dataString
             else -> null
         } ?: return
-        val url = Regex("https?://[^\\s<>\\\"]+", RegexOption.IGNORE_CASE).find(raw)?.value?.trimEnd('.', ',', ')', ']') ?: return
+        val url = extractFirstUrl(raw) ?: return
         pendingSharedUrl = url
     }
 
@@ -114,12 +113,23 @@ class MainActivity : ComponentActivity() {
 private enum class AppTab { HOME, DOWNLOADS, SETTINGS }
 
 @Composable
-private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
+private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<Unit>) {
     val context = LocalContext.current
     val items by DownloadCoordinator.items.collectAsState()
+    val uiPreferences = remember {
+        context.getSharedPreferences("download_studio_ui", android.content.Context.MODE_PRIVATE)
+    }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarScope = rememberCoroutineScope()
     var tab by remember { mutableStateOf(AppTab.HOME) }
     var url by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf(DownloadMode.VIDEO) }
+    var mode by remember {
+        mutableStateOf(
+            runCatching {
+                DownloadMode.valueOf(uiPreferences.getString("default_mode", "VIDEO") ?: "VIDEO")
+            }.getOrDefault(DownloadMode.VIDEO)
+        )
+    }
     var selected by remember { mutableStateOf<DownloadItem?>(null) }
     var setupReady by remember {
         mutableStateOf(StorageAccess.isDownloadLocationConfigured(context) &&
@@ -163,6 +173,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
 
     Scaffold(
         containerColor = Ink,
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         bottomBar = {
             NavigationBar(containerColor = Color(0xFF0D1524), tonalElevation = 0.dp) {
                 NavigationBarItem(selected = tab == AppTab.HOME, enabled = setupReady, onClick = { if (setupReady) tab = AppTab.HOME }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
@@ -176,11 +187,25 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
             when (tab) {
                 AppTab.HOME -> if (setupReady) HomeScreen(
                     items = items, url = url, onUrl = { url = it }, mode = mode,
-                    onMode = { mode = it }, onAdd = {
+                    onMode = {
+                        mode = it
+                        uiPreferences.edit().putString("default_mode", it.name).apply()
+                    }, onAdd = {
                         val clean = url.trim()
-                        if (clean.startsWith("http://") || clean.startsWith("https://")) {
-                            onIncomingUrl(clean, mode); url = ""; tab = AppTab.DOWNLOADS
-                        } else Toast.makeText(context, "Enter a valid HTTP or HTTPS link", Toast.LENGTH_SHORT).show()
+                        val uri = runCatching { Uri.parse(clean) }.getOrNull()
+                        if ((uri?.scheme == "http" || uri?.scheme == "https") && !uri.host.isNullOrBlank()) {
+                            onIncomingUrl(clean, mode)
+                                .onSuccess {
+                                    url = ""
+                                    tab = AppTab.DOWNLOADS
+                                    snackbarScope.launch { snackbarHostState.showSnackbar("Added to Downloads") }
+                                }
+                                .onFailure {
+                                    Toast.makeText(context, friendlyError(it.message ?: "Could not add link"), Toast.LENGTH_LONG).show()
+                                }
+                        } else {
+                            Toast.makeText(context, "Paste a valid video or media link.", Toast.LENGTH_SHORT).show()
+                        }
                     }, onOpenItem = openDownload, onQueue = { tab = AppTab.DOWNLOADS }
                 )
                 AppTab.DOWNLOADS -> if (setupReady) DownloadsScreen(items, onOpenItem = openDownload)
@@ -232,16 +257,35 @@ private fun HomeScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Your media,\nbeautifully managed.", color = TextMain, fontSize = 28.sp, lineHeight = 33.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Download videos and audio directly to your phone.", color = TextMuted, fontSize = 13.sp)
+                Text("Paste a link, check the preview, and download.", color = TextMuted, fontSize = 13.sp)
             }
         }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val clipboard = LocalClipboardManager.current
+                    val context = LocalContext.current
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("QUICK DOWNLOAD", color = Cyan, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.3.sp)
                         Spacer(Modifier.weight(1f))
-                        Icon(Icons.Default.Link, null, tint = TextMuted)
+                        TextButton(
+                            onClick = {
+                                val pasted = clipboard.getText()?.text.orEmpty()
+                                val link = extractFirstUrl(pasted)
+                                if (link != null) onUrl(link)
+                                else Toast.makeText(context, "No link found on the clipboard.", Toast.LENGTH_SHORT).show()
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(Icons.Default.ContentPaste, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Paste", fontSize = 11.sp)
+                        }
+                        if (url.isNotBlank()) {
+                            IconButton(onClick = { onUrl("") }, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Default.Close, "Clear link", tint = TextMuted)
+                            }
+                        }
                     }
                     OutlinedTextField(
                         value = url, onValueChange = onUrl, modifier = Modifier.fillMaxWidth(),
@@ -259,7 +303,12 @@ private fun HomeScreen(
                     Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Blue)) {
                         Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Add download", fontWeight = FontWeight.Bold)
                     }
-                    Text("Best available video + audio or best-audio MP3 preset.", color = TextMuted, fontSize = 10.sp)
+                    Text(
+                        if (mode == DownloadMode.VIDEO) "Best available video + audio."
+                        else "Best available audio, saved as MP3.",
+                        color = TextMuted,
+                        fontSize = 10.sp
+                    )
                 }
             }
         }
@@ -290,8 +339,8 @@ private fun HomeScreen(
 @Composable
 private fun ModeSelector(mode: DownloadMode, onMode: (DownloadMode) -> Unit) {
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xFF0B1423)).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        ModeChip("Video", "Best video + audio", mode == DownloadMode.VIDEO, Blue, Modifier.weight(1f)) { onMode(DownloadMode.VIDEO) }
-        ModeChip("Audio", "Best audio · MP3", mode == DownloadMode.AUDIO, Green, Modifier.weight(1f)) { onMode(DownloadMode.AUDIO) }
+        ModeChip("Video", "Best available video + audio", mode == DownloadMode.VIDEO, Blue, Modifier.weight(1f)) { onMode(DownloadMode.VIDEO) }
+        ModeChip("Audio", "Best available audio", mode == DownloadMode.AUDIO, Green, Modifier.weight(1f)) { onMode(DownloadMode.AUDIO) }
     }
 }
 
@@ -323,7 +372,7 @@ private fun ShareFeatureCard() {
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("Download from YouTube", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Text("In YouTube, tap Share and choose Download Studio. Then select Video or Audio.", color = TextMuted, fontSize = 10.sp)
+                Text("Use Share in any app and choose Download Studio, or paste a link above.", color = TextMuted, fontSize = 10.sp)
             }
         }
     }
