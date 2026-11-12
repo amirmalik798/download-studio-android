@@ -31,7 +31,7 @@ def main() -> int:
     require("compileSdk = 36" in app_build and "minSdk = 26" in app_build, "Unexpected SDK configuration")
     require('versionName = "0.1.5"' in app_build and "versionCode = 6" in app_build, "Version not bumped to 0.1.4")
     require("coil-compose" in app_build and "AsyncImage" in main_activity, "Coil thumbnail support missing")
-    require("youtubeThumbnailUrl" in main_activity and "VideoThumbnailPreview(url)" in main_activity and "height(190.dp)" in main_activity and '"VIDEO"' in main_activity and '"AUDIO"' in main_activity, "Pasted URL thumbnail preview/type labels missing")
+    require("youtubeThumbnailUrl" in main_activity and "resolvePageThumbnail" in main_activity and "og:image" in main_activity and "twitter:image" in main_activity and "VideoThumbnailPreview(url)" in main_activity and "height(190.dp)" in main_activity and "jsoup" in app_build and '"VIDEO"' in main_activity and '"AUDIO"' in main_activity, "Multi-site pasted URL thumbnail preview/type labels missing")
     require("private fun DownloadsScreen" in main_activity, "Unified Downloads screen missing")
     require("AppTab.DOWNLOADS" in main_activity and "AppTab.QUEUE" not in main_activity and "AppTab.LIBRARY" not in main_activity, "Old Queue/Library navigation remains")
     require("QueueScreen(" not in main_activity and "LibraryScreen(" not in main_activity, "Duplicate Queue/Library screens remain")
