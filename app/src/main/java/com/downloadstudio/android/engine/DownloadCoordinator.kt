@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -156,7 +157,6 @@ object DownloadCoordinator {
     fun retry(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
         if (item.status !in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED)) return
-        cancelled.remove(id)
         thermalDeferred.remove(id)
         update(id) {
             it.copy(
