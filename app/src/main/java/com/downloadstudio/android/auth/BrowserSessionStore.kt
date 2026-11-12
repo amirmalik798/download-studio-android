@@ -63,7 +63,7 @@ object BrowserSessionStore {
                 }
             }
             manager.flush()
-            urls(platform).map { android.net.Uri.parse(it).origin }.distinct().forEach { origin ->
+            urls(platform).map { uri -> android.net.Uri.parse(uri).let { it.scheme + "://" + it.authority } }.distinct().forEach { origin ->
                 WebStorage.getInstance().deleteOrigin(origin)
             }
         }
