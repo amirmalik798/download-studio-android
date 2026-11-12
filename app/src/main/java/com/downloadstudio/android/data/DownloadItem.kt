@@ -15,7 +15,8 @@ data class DownloadItem(
     val error: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val completedAt: Long = 0L,
-    val thumbnailUrl: String = ""
+    val thumbnailUrl: String = "",
+    val sourceUrl: String = url
 )
 
 enum class DownloadMode { VIDEO, AUDIO }
