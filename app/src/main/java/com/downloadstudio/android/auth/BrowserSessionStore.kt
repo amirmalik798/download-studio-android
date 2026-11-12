@@ -58,7 +58,12 @@ object BrowserSessionStore {
                 val cookieNames = manager.getCookie(url).orEmpty().split(';').mapNotNull { part ->
                     part.trim().substringBefore('=').takeIf { it.matches(Regex("[A-Za-z0-9_]+")) }
                 }.distinct()
+                val domain = when (platform) {
+                    Platform.FACEBOOK -> "facebook.com"
+                    Platform.INSTAGRAM -> "instagram.com"
+                }
                 cookieNames.forEach { name ->
+                    manager.setCookie(url, "$name=; Max-Age=0; path=/; domain=$domain")
                     manager.setCookie(url, "$name=; Max-Age=0; path=/")
                 }
             }
