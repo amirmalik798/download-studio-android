@@ -235,7 +235,7 @@ private fun HomeScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Your media,\nbeautifully managed.", color = TextMain, fontSize = 28.sp, lineHeight = 33.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Download videos and audio directly to your phone.", color = TextMuted, fontSize = 13.sp)
+                Text("Paste a link, check the preview, and download in one tap.", color = TextMuted, fontSize = 13.sp)
             }
         }
         item {
@@ -527,6 +527,16 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                                     shareDownloadedFile(context, item)
                                 })
                         }
+                        DropdownMenuItem(
+                            text = { Text("Copy source link") },
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                            onClick = {
+                                actionsExpanded = false
+                                val manager = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                manager.setPrimaryClip(ClipData.newPlainText("Media link", item.url))
+                                Toast.makeText(context, "Source link copied", Toast.LENGTH_SHORT).show()
+                            }
+                        )
                         if (item.status in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED)) {
                             DropdownMenuItem(
                                 text = { Text("Retry download") },
@@ -645,8 +655,11 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
             if (setupRequired) {
                 Card(colors = CardDefaults.cardColors(containerColor = Panel2), border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = .65f)), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("SETUP REQUIRED", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Text("Configure a writable download folder, install Termux, and grant Download Studio the Run commands in Termux permission. Home and Downloads stay locked until all checks pass.", color = TextMain, fontSize = 11.sp, lineHeight = 16.sp)
+                        Text("SETUP CHECKLIST", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Complete these three steps to unlock Home and Downloads.", color = TextMain, fontSize = 11.sp, lineHeight = 16.sp)
+                        StatusLine("1. Choose a writable download folder", treeGranted, if (treeGranted) "Ready" else "Required")
+                        StatusLine("2. Install Termux", termuxInstalled, if (termuxInstalled) "Detected" else "Required")
+                        StatusLine("3. Grant Run commands permission", termuxPermission, if (termuxPermission) "Granted" else "Required")
                     }
                 }
             }
@@ -790,7 +803,7 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best audio · MP3")
-                DetailLine("Status", item.status.name)
+                DetailLine("Status", statusLabel(item.status))
                 DetailLine("Download date", formatDownloadDate(item))
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
                 DetailLine("Speed", item.speed)
@@ -963,8 +976,18 @@ private fun extractFirstUrl(raw: String): String? =
         .find(raw)?.value?.trimEnd('.', ',', ')', ']')
 
 private fun websiteName(rawUrl: String): String = runCatching {
-    Uri.parse(rawUrl).host?.lowercase(Locale.ROOT)?.removePrefix("www.")?.substringBefore('.')?.replaceFirstChar { it.uppercase() }
-}.getOrNull().orEmpty().ifBlank { "Website" }
+    val host = Uri.parse(rawUrl).host?.lowercase(Locale.ROOT)?.removePrefix("www.").orEmpty()
+    when {
+        host == "youtu.be" || host.endsWith("youtube.com") -> "YouTube"
+        host == "fb.watch" || host.endsWith("facebook.com") -> "Facebook"
+        host.endsWith("instagram.com") -> "Instagram"
+        host.endsWith("tiktok.com") -> "TikTok"
+        host == "x.com" || host.endsWith("twitter.com") -> "X"
+        host.endsWith("vimeo.com") -> "Vimeo"
+        host.isNotBlank() -> host.substringBefore('.').replaceFirstChar { it.uppercase() }
+        else -> "Website"
+    }
+}.getOrDefault("Website")
 
 private fun statusLabel(status: DownloadStatus): String = when (status) {
     DownloadStatus.QUEUED -> "Waiting"
