@@ -33,7 +33,7 @@ object BrowserSessionStore {
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         val encrypted = cipher.doFinal(cookieJar.toByteArray(Charsets.UTF_8))
         val packed = cipher.iv + encrypted
-        check(prefs(context).edit().putString(platform.key, Base64.encodeToString(packed, Base64.NO_WRAP)).commit()) { "Could not save the encrypted session." } { "Could not save the encrypted session." }
+        check(prefs(context).edit().putString(platform.key, Base64.encodeToString(packed, Base64.NO_WRAP)).commit()) { "Could not save the encrypted session." }
     }
 
     fun cookieJarForUrl(context: Context, rawUrl: String): String? {
