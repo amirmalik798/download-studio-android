@@ -1,4 +1,4 @@
-# Download Studio for Android — 0.1.4
+# Download Studio for Android — 0.1.5
 
 A native Android media-downloader interface. Download Studio receives media URLs through Android's Share sheet and delegates extraction, downloading and processing to yt-dlp and FFmpeg running locally in Termux.
 
@@ -10,7 +10,8 @@ A native Android media-downloader interface. Download Studio receives media URLs
 - Sort by name A–Z, name Z–A, newest download date, or oldest download date.
 - Filter downloads by All, Video, or Audio.
 - Actual media titles printed by yt-dlp before download and displayed instead of the generic Shared media label.
-- YouTube thumbnails and explicit VIDEO/AUDIO labels in the list.
+- YouTube thumbnails in the Downloads list and a large 16:9 thumbnail preview when a supported YouTube URL is pasted into Quick Download.
+- Explicit VIDEO/AUDIO labels in the Downloads list.
 - Tapping a completed item opens its saved file using Android's ACTION_VIEW and the file's detected MIME type; Android chooses the compatible app.
 - Queue/download details remain available for unfinished or failed items.
 - Termux RUN_COMMAND integration; yt-dlp and FFmpeg execute on the phone.
