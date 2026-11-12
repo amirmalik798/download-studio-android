@@ -499,6 +499,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
 @Composable
 private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest: (() -> Unit)? = null) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val color = when (item.status) {
         DownloadStatus.COMPLETED -> Green
         DownloadStatus.FAILED -> Red
@@ -529,11 +530,11 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                         Box(Modifier.clip(CircleShape).background((if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
                             Text(if (isVideo) "VIDEO" else "AUDIO", color = if (isVideo) Blue else Green, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                         }
-                        Text(item.url.substringAfter("//").take(34), color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(mediaSiteName(item.url), color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
-                    Text(item.status.name.lowercase().replaceFirstChar { it.titlecase(Locale.getDefault()) }, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text(friendlyStatus(item.status), color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 }
                 var actionsExpanded by remember(item.id) { mutableStateOf(false) }
                 Box {
@@ -541,6 +542,21 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                         Icon(Icons.Default.MoreVert, "Download actions", tint = TextMuted)
                     }
                     DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
+                        if (item.status == DownloadStatus.FAILED || item.status == DownloadStatus.STOPPED) {
+                            DropdownMenuItem(text = { Text("Retry download") },
+                                leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                                onClick = {
+                                    actionsExpanded = false
+                                    DownloadCoordinator.retry(item.id)
+                                })
+                        }
+                        DropdownMenuItem(text = { Text("Copy source link") },
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                            onClick = {
+                                actionsExpanded = false
+                                clipboard.setText(AnnotatedString(item.url))
+                                Toast.makeText(context, "Source link copied.", Toast.LENGTH_SHORT).show()
+                            })
                         if (item.status == DownloadStatus.COMPLETED) {
                             DropdownMenuItem(text = { Text("View in folder") },
                                 leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
@@ -570,7 +586,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
             } else if (item.status == DownloadStatus.COMPLETED) {
                 Text(item.outputPath.substringAfterLast('/').ifBlank { "Saved to Downloads" }, color = Green, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             } else if (item.error.isNotBlank()) {
-                Text(item.error, color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(friendlyError(item.error), color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             } else {
                 Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best audio extracted to MP3", color = TextMuted, fontSize = 10.sp)
             }
@@ -666,8 +682,21 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
             if (setupRequired) {
                 Card(colors = CardDefaults.cardColors(containerColor = Panel2), border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = .65f)), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("SETUP REQUIRED", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Text("Configure a writable download folder, install Termux, and grant Download Studio the Run commands in Termux permission. Home and Downloads stay locked until all checks pass.", color = TextMain, fontSize = 11.sp, lineHeight = 16.sp)
+                        Text("LET'S FINISH SETUP", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Complete these three steps in order. Your downloads and saved files are not affected by setup changes.", color = TextMain, fontSize = 11.sp, lineHeight = 16.sp)
+                        StatusLine("1. Choose a download folder", treeGranted, if (treeGranted) "Complete" else "Required")
+                        StatusLine("2. Install Termux", termuxInstalled, if (termuxInstalled) "Detected" else "Required")
+                        StatusLine("3. Allow Run commands in Termux", termuxPermission, if (termuxPermission) "Granted" else "Required")
+                    }
+                }
+            } else {
+                Card(colors = CardDefaults.cardColors(containerColor = Panel2), shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Green.copy(alpha = .4f))) {
+                    Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Default.CheckCircle, null, tint = Green)
+                        Column {
+                            Text("Download Studio is ready", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Your download folder and Termux connection are configured.", color = TextMuted, fontSize = 10.sp)
+                        }
                     }
                 }
             }
@@ -725,7 +754,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                             val result = TermuxBridge.runShell(context, TermuxBridge.engineCheckScript(dest), "Download Studio · engine check", true)
                             if (result.isFailure) engineStatus = result.exceptionOrNull()?.message ?: "Could not check Termux"
                         }
-                    }) { Text("Check") }
+                    }) { Text("Check health") }
                 }
                 OutlinedButton(onClick = {
                     val intent = context.packageManager.getLaunchIntentForPackage(TermuxBridge.TERMUX_PACKAGE)
@@ -749,7 +778,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
         item {
             SettingsCard("ABOUT DOWNLOAD STUDIO", "Local media downloader") {
                 Text("Developed by Amir Malik (2026)", color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Text("Version 0.1.5", color = TextMuted, fontSize = 10.sp)
+                Text("Version 0.1.6", color = TextMuted, fontSize = 10.sp)
             }
         }
         item {
@@ -811,14 +840,14 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best audio · MP3")
-                DetailLine("Status", item.status.name)
+                DetailLine("Status", friendlyStatus(item.status))
                 DetailLine("Download date", formatDownloadDate(item))
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
                 DetailLine("Speed", item.speed)
                 DetailLine("ETA", item.eta)
                 DetailLine("Source", item.url)
                 if (item.outputPath.isNotBlank()) DetailLine("Saved file", item.outputPath)
-                if (item.error.isNotBlank()) Text(item.error, color = Red, fontSize = 11.sp)
+                if (item.error.isNotBlank()) Text(friendlyError(item.error), color = Red, fontSize = 11.sp)
             }
         },
         confirmButton = {
@@ -840,6 +869,46 @@ private fun DetailLine(label: String, value: String) {
     }
 }
 
+
+private fun extractFirstUrl(raw: String): String? =
+    Regex("https?://[^\\s<>\\\"]+", RegexOption.IGNORE_CASE)
+        .find(raw)?.value?.trimEnd('.', ',', ')', ']', '}', '"', '\'')
+
+private fun friendlyStatus(status: DownloadStatus): String = when (status) {
+    DownloadStatus.QUEUED -> "Waiting"
+    DownloadStatus.STARTING -> "Preparing"
+    DownloadStatus.DOWNLOADING -> "Downloading"
+    DownloadStatus.PAUSED -> "Paused"
+    DownloadStatus.PROCESSING -> "Finishing"
+    DownloadStatus.COMPLETED -> "Saved"
+    DownloadStatus.FAILED -> "Failed"
+    DownloadStatus.STOPPED -> "Stopped"
+}
+
+private fun friendlyError(raw: String): String {
+    val value = raw.trim()
+    val message = value.lowercase(Locale.ROOT)
+    return when {
+        message.contains("unsupported url") ->
+            "This website or media type isn't supported by the download engine yet."
+        message.contains("private video") || message.contains("login required") ||
+            message.contains("sign in") || message.contains("not authorized") ||
+            message.contains("http error 401") || message.contains("http error 403") ->
+            "This media is restricted or requires access the downloader doesn't have."
+        message.contains("video unavailable") || message.contains("http error 404") ||
+            message.contains("not found") ->
+            "This video may have been removed or is no longer available."
+        message.contains("timed out") || message.contains("timeout") ||
+            message.contains("connection reset") || message.contains("network is unreachable") ->
+            "The website took too long to respond. Check your connection and try again."
+        message.contains("termux") || message.contains("run commands") ->
+            "The download engine couldn't start. Open Settings and check the Termux connection."
+        message.contains("yt-dlp exited") || message.contains("exit code") ->
+            "The download couldn't be completed. Check your connection or try again."
+        value.isBlank() -> "Something went wrong. Please try again."
+        else -> value.take(220)
+    }
+}
 
 private fun youtubeVideoId(rawUrl: String): String? = runCatching {
     val uri = Uri.parse(rawUrl)
