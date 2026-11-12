@@ -102,7 +102,7 @@ object TermuxBridge {
             "if [ ! -f " + q(cookiesSourcePath) + " ]; then printf '%s' 'ERROR: Temporary browser session transfer is missing.' > " + q(log) + "; printf '1' > " + q(exit) + "; exit 1; fi; " +
             "if ! cp " + q(cookiesSourcePath) + " " + q(cookieFile) + "; then printf '%s' 'ERROR: Could not transfer the browser session into Termux.' > " + q(log) + "; printf '1' > " + q(exit) + "; exit 1; fi; " +
             "chmod 600 " + q(cookieFile) + "; rm -f " + q(cookiesSourcePath) + "; " +
-            "trap \\"rm -f " + q(cookieFile) + "\\" EXIT; "
+            "trap " + q("rm -f $cookieFile") + " EXIT; "
         val script = downloadScript(id, url, mode, destination)
         val marker = "PYTHONUNBUFFERED=1 yt-dlp "
         check(script.contains(marker)) { "Could not prepare authenticated download command." }
