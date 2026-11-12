@@ -47,6 +47,7 @@ import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import java.net.InetAddress
@@ -82,8 +83,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = scheme) {
                 DownloadStudioRoot(
                     onIncomingUrl = { url, mode ->
-                        runCatching { DownloadCoordinator.enqueue(url, mode) }
-                            .onFailure { Toast.makeText(this, it.message ?: "Could not add link", Toast.LENGTH_LONG).show() }
+                        runCatching { DownloadCoordinator.enqueue(url, mode); Unit }
                     }
                 )
             }
@@ -102,7 +102,7 @@ class MainActivity : ComponentActivity() {
             Intent.ACTION_VIEW -> intent.dataString
             else -> null
         } ?: return
-        val url = Regex("https?://[^\\s<>\\\"]+", RegexOption.IGNORE_CASE).find(raw)?.value?.trimEnd('.', ',', ')', ']') ?: return
+        val url = extractFirstUrl(raw) ?: return
         pendingSharedUrl = url
     }
 
@@ -114,12 +114,23 @@ class MainActivity : ComponentActivity() {
 private enum class AppTab { HOME, DOWNLOADS, SETTINGS }
 
 @Composable
-private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
+private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<Unit>) {
     val context = LocalContext.current
     val items by DownloadCoordinator.items.collectAsState()
+    val uiPreferences = remember {
+        context.getSharedPreferences("download_studio_ui", android.content.Context.MODE_PRIVATE)
+    }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbarScope = rememberCoroutineScope()
     var tab by remember { mutableStateOf(AppTab.HOME) }
     var url by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf(DownloadMode.VIDEO) }
+    var mode by remember {
+        mutableStateOf(
+            runCatching {
+                DownloadMode.valueOf(uiPreferences.getString("default_mode", "VIDEO") ?: "VIDEO")
+            }.getOrDefault(DownloadMode.VIDEO)
+        )
+    }
     var selected by remember { mutableStateOf<DownloadItem?>(null) }
     var setupReady by remember {
         mutableStateOf(StorageAccess.isDownloadLocationConfigured(context) &&
@@ -163,6 +174,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
 
     Scaffold(
         containerColor = Ink,
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         bottomBar = {
             NavigationBar(containerColor = Color(0xFF0D1524), tonalElevation = 0.dp) {
                 NavigationBarItem(selected = tab == AppTab.HOME, enabled = setupReady, onClick = { if (setupReady) tab = AppTab.HOME }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
@@ -176,11 +188,25 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
             when (tab) {
                 AppTab.HOME -> if (setupReady) HomeScreen(
                     items = items, url = url, onUrl = { url = it }, mode = mode,
-                    onMode = { mode = it }, onAdd = {
+                    onMode = {
+                        mode = it
+                        uiPreferences.edit().putString("default_mode", it.name).apply()
+                    }, onAdd = {
                         val clean = url.trim()
-                        if (clean.startsWith("http://") || clean.startsWith("https://")) {
-                            onIncomingUrl(clean, mode); url = ""; tab = AppTab.DOWNLOADS
-                        } else Toast.makeText(context, "Enter a valid HTTP or HTTPS link", Toast.LENGTH_SHORT).show()
+                        val uri = runCatching { Uri.parse(clean) }.getOrNull()
+                        if ((uri?.scheme == "http" || uri?.scheme == "https") && !uri.host.isNullOrBlank()) {
+                            onIncomingUrl(clean, mode)
+                                .onSuccess {
+                                    url = ""
+                                    tab = AppTab.DOWNLOADS
+                                    snackbarScope.launch { snackbarHostState.showSnackbar("Added to Downloads") }
+                                }
+                                .onFailure {
+                                    Toast.makeText(context, friendlyError(it.message ?: "Could not add link"), Toast.LENGTH_LONG).show()
+                                }
+                        } else {
+                            Toast.makeText(context, "Paste a valid video or media link.", Toast.LENGTH_SHORT).show()
+                        }
                     }, onOpenItem = openDownload, onQueue = { tab = AppTab.DOWNLOADS }
                 )
                 AppTab.DOWNLOADS -> if (setupReady) DownloadsScreen(items, onOpenItem = openDownload)
@@ -232,16 +258,35 @@ private fun HomeScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Your media,\nbeautifully managed.", color = TextMain, fontSize = 28.sp, lineHeight = 33.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Download videos and audio directly to your phone.", color = TextMuted, fontSize = 13.sp)
+                Text("Paste a link, check the preview, and download.", color = TextMuted, fontSize = 13.sp)
             }
         }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val clipboard = LocalClipboardManager.current
+                    val context = LocalContext.current
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("QUICK DOWNLOAD", color = Cyan, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.3.sp)
                         Spacer(Modifier.weight(1f))
-                        Icon(Icons.Default.Link, null, tint = TextMuted)
+                        TextButton(
+                            onClick = {
+                                val pasted = clipboard.getText()?.text.orEmpty()
+                                val link = extractFirstUrl(pasted)
+                                if (link != null) onUrl(link)
+                                else Toast.makeText(context, "No link found on the clipboard.", Toast.LENGTH_SHORT).show()
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(Icons.Default.ContentPaste, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Paste", fontSize = 11.sp)
+                        }
+                        if (url.isNotBlank()) {
+                            IconButton(onClick = { onUrl("") }, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Default.Close, "Clear link", tint = TextMuted)
+                            }
+                        }
                     }
                     OutlinedTextField(
                         value = url, onValueChange = onUrl, modifier = Modifier.fillMaxWidth(),
@@ -256,10 +301,24 @@ private fun HomeScreen(
                     )
                     VideoThumbnailPreview(url)
                     ModeSelector(mode, onMode)
-                    Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Blue)) {
+                    Button(
+                        onClick = onAdd,
+                        enabled = runCatching {
+                            val uri = Uri.parse(url.trim())
+                            (uri.scheme == "https" || uri.scheme == "http") && !uri.host.isNullOrBlank()
+                        }.getOrDefault(false),
+                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Blue)
+                    ) {
                         Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Add download", fontWeight = FontWeight.Bold)
                     }
-                    Text("Best available video + audio or best-audio MP3 preset.", color = TextMuted, fontSize = 10.sp)
+                    Text(
+                        if (mode == DownloadMode.VIDEO) "Best available video + audio."
+                        else "Best available audio, saved as MP3.",
+                        color = TextMuted,
+                        fontSize = 10.sp
+                    )
                 }
             }
         }
@@ -278,7 +337,7 @@ private fun HomeScreen(
             }
         }
         if (items.isEmpty()) {
-            item { EmptyState("Nothing downloading yet", "Paste a link above, or open YouTube → Share → Download Studio.", Icons.Default.VideoLibrary) }
+            item { EmptyState("Nothing downloading yet", "Paste a media link above, or use Share in another app and choose Download Studio.", Icons.Default.VideoLibrary) }
         } else {
             lazyItems(items.sortedByDescending { it.createdAt }.take(3), key = { it.id }) { item -> DownloadRow(item, onClick = { onOpenItem(item) }) }
         }
@@ -290,8 +349,8 @@ private fun HomeScreen(
 @Composable
 private fun ModeSelector(mode: DownloadMode, onMode: (DownloadMode) -> Unit) {
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xFF0B1423)).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        ModeChip("Video", "Best video + audio", mode == DownloadMode.VIDEO, Blue, Modifier.weight(1f)) { onMode(DownloadMode.VIDEO) }
-        ModeChip("Audio", "Best audio · MP3", mode == DownloadMode.AUDIO, Green, Modifier.weight(1f)) { onMode(DownloadMode.AUDIO) }
+        ModeChip("Video", "Best available video + audio", mode == DownloadMode.VIDEO, Blue, Modifier.weight(1f)) { onMode(DownloadMode.VIDEO) }
+        ModeChip("Audio", "Best available audio", mode == DownloadMode.AUDIO, Green, Modifier.weight(1f)) { onMode(DownloadMode.AUDIO) }
     }
 }
 
@@ -323,7 +382,7 @@ private fun ShareFeatureCard() {
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("Download from YouTube", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Text("In YouTube, tap Share and choose Download Studio. Then select Video or Audio.", color = TextMuted, fontSize = 10.sp)
+                Text("Use Share in any app and choose Download Studio, or paste a link above.", color = TextMuted, fontSize = 10.sp)
             }
         }
     }
@@ -436,7 +495,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
         }
         Spacer(Modifier.height(5.dp))
         when {
-            items.isEmpty() -> EmptyState("No downloads yet", "Paste a link or use YouTube → Share → Download Studio.", Icons.Default.CloudDownload)
+            items.isEmpty() -> EmptyState("No downloads yet", "Paste a link or share a supported media URL from another app.", Icons.Default.CloudDownload)
             visibleItems.isEmpty() -> EmptyState("No matching downloads", "Try another search term or category filter.", Icons.Default.Search)
             else -> LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
                 lazyItems(visibleItems, key = { it.id }) { item ->
@@ -450,6 +509,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
 @Composable
 private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest: (() -> Unit)? = null) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val color = when (item.status) {
         DownloadStatus.COMPLETED -> Green
         DownloadStatus.FAILED -> Red
@@ -480,11 +540,11 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                         Box(Modifier.clip(CircleShape).background((if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
                             Text(if (isVideo) "VIDEO" else "AUDIO", color = if (isVideo) Blue else Green, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                         }
-                        Text(item.url.substringAfter("//").take(34), color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(mediaSiteName(item.url), color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
-                    Text(item.status.name.lowercase().replaceFirstChar { it.titlecase(Locale.getDefault()) }, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text(friendlyStatus(item.status), color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 }
                 var actionsExpanded by remember(item.id) { mutableStateOf(false) }
                 Box {
@@ -492,6 +552,21 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                         Icon(Icons.Default.MoreVert, "Download actions", tint = TextMuted)
                     }
                     DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
+                        if (item.status == DownloadStatus.FAILED || item.status == DownloadStatus.STOPPED) {
+                            DropdownMenuItem(text = { Text("Retry download") },
+                                leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                                onClick = {
+                                    actionsExpanded = false
+                                    DownloadCoordinator.retry(item.id)
+                                })
+                        }
+                        DropdownMenuItem(text = { Text("Copy source link") },
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                            onClick = {
+                                actionsExpanded = false
+                                clipboard.setText(AnnotatedString(item.url))
+                                Toast.makeText(context, "Source link copied.", Toast.LENGTH_SHORT).show()
+                            })
                         if (item.status == DownloadStatus.COMPLETED) {
                             DropdownMenuItem(text = { Text("View in folder") },
                                 leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
@@ -521,9 +596,9 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
             } else if (item.status == DownloadStatus.COMPLETED) {
                 Text(item.outputPath.substringAfterLast('/').ifBlank { "Saved to Downloads" }, color = Green, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             } else if (item.error.isNotBlank()) {
-                Text(item.error, color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(friendlyError(item.error), color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             } else {
-                Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best audio extracted to MP3", color = TextMuted, fontSize = 10.sp)
+                Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3", color = TextMuted, fontSize = 10.sp)
             }
         }
     }
@@ -617,8 +692,21 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
             if (setupRequired) {
                 Card(colors = CardDefaults.cardColors(containerColor = Panel2), border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = .65f)), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("SETUP REQUIRED", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Text("Configure a writable download folder, install Termux, and grant Download Studio the Run commands in Termux permission. Home and Downloads stay locked until all checks pass.", color = TextMain, fontSize = 11.sp, lineHeight = 16.sp)
+                        Text("LET'S FINISH SETUP", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Complete these three steps in order. Your downloads and saved files are not affected by setup changes.", color = TextMain, fontSize = 11.sp, lineHeight = 16.sp)
+                        StatusLine("1. Choose a download folder", treeGranted, if (treeGranted) "Complete" else "Required")
+                        StatusLine("2. Install Termux", termuxInstalled, if (termuxInstalled) "Detected" else "Required")
+                        StatusLine("3. Allow Run commands in Termux", termuxPermission, if (termuxPermission) "Granted" else "Required")
+                    }
+                }
+            } else {
+                Card(colors = CardDefaults.cardColors(containerColor = Panel2), shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Green.copy(alpha = .4f))) {
+                    Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Default.CheckCircle, null, tint = Green)
+                        Column {
+                            Text("Download Studio is ready", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Your download folder and Termux connection are configured.", color = TextMuted, fontSize = 10.sp)
+                        }
                     }
                 }
             }
@@ -673,10 +761,11 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                         if (dest.isNullOrBlank()) engineStatus = "Choose a Downloads folder first"
                         else {
                             engineStatus = "Checking…"
+                            StorageAccess.deleteState(context, "DownloadStudioState/engine.txt")
                             val result = TermuxBridge.runShell(context, TermuxBridge.engineCheckScript(dest), "Download Studio · engine check", true)
                             if (result.isFailure) engineStatus = result.exceptionOrNull()?.message ?: "Could not check Termux"
                         }
-                    }) { Text("Check") }
+                    }) { Text("Check health") }
                 }
                 OutlinedButton(onClick = {
                     val intent = context.packageManager.getLaunchIntentForPackage(TermuxBridge.TERMUX_PACKAGE)
@@ -700,7 +789,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
         item {
             SettingsCard("ABOUT DOWNLOAD STUDIO", "Local media downloader") {
                 Text("Developed by Amir Malik (2026)", color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Text("Version 0.1.5", color = TextMuted, fontSize = 10.sp)
+                Text("Version 0.1.6", color = TextMuted, fontSize = 10.sp)
             }
         }
         item {
@@ -721,7 +810,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
             repeat(15) {
                 val report = StorageAccess.readState(context, "DownloadStudioState/engine.txt")
                 if (!report.isNullOrBlank()) {
-                    engineStatus = report.trim().replace("\\n", " · ")
+                    engineStatus = report.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.joinToString(" · ")
                     return@LaunchedEffect
                 }
                 delay(1_000)
@@ -761,15 +850,15 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
         title = { Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best audio · MP3")
-                DetailLine("Status", item.status.name)
+                DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3")
+                DetailLine("Status", friendlyStatus(item.status))
                 DetailLine("Download date", formatDownloadDate(item))
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
                 DetailLine("Speed", item.speed)
                 DetailLine("ETA", item.eta)
                 DetailLine("Source", item.url)
                 if (item.outputPath.isNotBlank()) DetailLine("Saved file", item.outputPath)
-                if (item.error.isNotBlank()) Text(item.error, color = Red, fontSize = 11.sp)
+                if (item.error.isNotBlank()) Text(friendlyError(item.error), color = Red, fontSize = 11.sp)
             }
         },
         confirmButton = {
@@ -791,6 +880,50 @@ private fun DetailLine(label: String, value: String) {
     }
 }
 
+
+private fun extractFirstUrl(raw: String): String? =
+    Regex("https?://[^\\s<>\\\"]+", RegexOption.IGNORE_CASE)
+        .find(raw)?.value?.trimEnd('.', ',', ')', ']', '}', '"', '\'')
+
+private fun friendlyStatus(status: DownloadStatus): String = when (status) {
+    DownloadStatus.QUEUED -> "Waiting"
+    DownloadStatus.STARTING -> "Preparing"
+    DownloadStatus.DOWNLOADING -> "Downloading"
+    DownloadStatus.PAUSED -> "Paused"
+    DownloadStatus.PROCESSING -> "Finishing"
+    DownloadStatus.COMPLETED -> "Saved"
+    DownloadStatus.FAILED -> "Failed"
+    DownloadStatus.STOPPED -> "Stopped"
+}
+
+private fun friendlyError(raw: String): String {
+    val value = raw.trim()
+    val message = value.lowercase(Locale.ROOT)
+    return when {
+        message.contains("unsupported url") ->
+            "This website or media type isn't supported by the download engine yet."
+        message.contains("private video") || message.contains("login required") ||
+            message.contains("sign in") || message.contains("not authorized") ||
+            message.contains("http error 401") || message.contains("http error 403") ->
+            "This media is restricted or requires access the downloader doesn't have."
+        message.contains("video unavailable") || message.contains("http error 404") ||
+            message.contains("not found") ->
+            "This video may have been removed or is no longer available."
+        message.contains("timed out") || message.contains("timeout") ||
+            message.contains("connection reset") || message.contains("network is unreachable") ->
+            "The website took too long to respond. Check your connection and try again."
+        message.contains("http error 429") || message.contains("too many requests") ->
+            "The website is temporarily limiting requests. Wait a little and try again."
+        message.contains("termux") || message.contains("run commands") ->
+            "The download engine couldn't start. Open Settings and check the Termux connection."
+        message.contains("ffmpeg") || message.contains("postprocessing") ->
+            "The media was found, but final processing failed. Check FFmpeg in Settings."
+        message.contains("yt-dlp exited") || message.contains("exit code") ->
+            "The download couldn't be completed. Check your connection or try again."
+        value.isBlank() -> "Something went wrong. Please try again."
+        else -> value.take(220)
+    }
+}
 
 private fun youtubeVideoId(rawUrl: String): String? = runCatching {
     val uri = Uri.parse(rawUrl)
@@ -875,42 +1008,193 @@ private fun resolvePageThumbnail(rawUrl: String): String? = runCatching {
     null
 }.getOrNull()
 
+private data class PreviewMetadata(
+    val title: String = "",
+    val thumbnailUrl: String = "",
+    val durationSeconds: Long = 0L
+)
+
+private fun mediaSiteName(rawUrl: String): String {
+    val host = runCatching { Uri.parse(rawUrl).host?.lowercase(Locale.ROOT)?.removePrefix("www.") }.getOrNull().orEmpty()
+    return when {
+        host == "youtu.be" || host.endsWith("youtube.com") -> "YouTube"
+        host == "facebook.com" || host.endsWith(".facebook.com") || host.endsWith("fb.watch") -> "Facebook"
+        host == "instagram.com" || host.endsWith(".instagram.com") -> "Instagram"
+        host == "tiktok.com" || host.endsWith(".tiktok.com") -> "TikTok"
+        host == "x.com" || host.endsWith(".x.com") || host == "twitter.com" || host.endsWith(".twitter.com") -> "X"
+        host == "vimeo.com" || host.endsWith(".vimeo.com") -> "Vimeo"
+        host == "reddit.com" || host.endsWith(".reddit.com") -> "Reddit"
+        host == "pinterest.com" || host.endsWith(".pinterest.com") -> "Pinterest"
+        host.isBlank() -> "Website"
+        else -> host.removePrefix("m.").replaceFirstChar { it.titlecase(Locale.ROOT) }
+    }
+}
+
+private fun safePreviewImageUrl(raw: String): String {
+    val value = raw.trim().let { if (it.startsWith("//")) "https:$it" else it }
+    val normalized = if (value.startsWith("http://", true)) "https://" + value.substringAfter("://") else value
+    return normalized.takeIf { runCatching { URI(it).scheme == "https" && !URI(it).host.isNullOrBlank() && URI(it).userInfo == null }.getOrDefault(false) }.orEmpty()
+}
+
+private fun parsePreviewResult(raw: String): PreviewMetadata {
+    val lines = raw.lineSequence().toList()
+    val title = lines.lastOrNull { it.startsWith("DS_TITLE:") }?.substringAfter("DS_TITLE:")?.trim().orEmpty()
+    val thumbnail = lines.lastOrNull { it.startsWith("DS_THUMBNAIL:") }?.substringAfter("DS_THUMBNAIL:")?.trim()
+        ?.let(::safePreviewImageUrl).orEmpty()
+    val duration = lines.lastOrNull { it.startsWith("DS_DURATION:") }?.substringAfter("DS_DURATION:")?.trim()
+        ?.toDoubleOrNull()?.toLong()?.coerceAtLeast(0L) ?: 0L
+    return PreviewMetadata(title = title, thumbnailUrl = thumbnail, durationSeconds = duration)
+}
+
+/**
+ * Reuse yt-dlp's site extractor for a metadata-only lookup. It is the same extractor
+ * that later supplies DS_THUMBNAIL during a real download, but --skip-download ensures
+ * this preview step never downloads the media file.
+ */
+private suspend fun resolveDownloaderPreview(
+    context: android.content.Context,
+    rawUrl: String
+): PreviewMetadata {
+    val destination = StorageAccess.destinationPath(context) ?: return PreviewMetadata()
+    if (!TermuxBridge.isInstalled(context) || !TermuxBridge.hasRunPermission(context)) return PreviewMetadata()
+
+    val requestId = java.util.UUID.randomUUID().toString().replace("-", "")
+    val statePath = "DownloadStudioState/preview-$requestId.txt"
+    val script = TermuxBridge.previewMetadataScript(requestId, rawUrl, destination)
+    val launch = withContext(Dispatchers.IO) {
+        TermuxBridge.runShell(context, script, "Download Studio · preview lookup", true)
+    }
+    if (launch.isFailure) return PreviewMetadata()
+
+    repeat(62) {
+        delay(400)
+        val state = withContext(Dispatchers.IO) { StorageAccess.readState(context, statePath) }
+        if (!state.isNullOrBlank() && state.contains("DS_DONE")) {
+            withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
+            val parsed = parsePreviewResult(state)
+            val safeThumbnail = if (parsed.thumbnailUrl.isBlank()) "" else withContext(Dispatchers.IO) {
+                parsed.thumbnailUrl.takeIf { isPublicHttpsUrl(it) }.orEmpty()
+            }
+            return parsed.copy(thumbnailUrl = safeThumbnail)
+        }
+    }
+    withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
+    return PreviewMetadata()
+}
+
+private fun resolvePageMetadata(rawUrl: String): PreviewMetadata = runCatching {
+    var currentUrl = rawUrl
+    for (attempt in 0 until 5) {
+        if (!isPublicHttpsUrl(currentUrl)) return@runCatching PreviewMetadata()
+        val response = Jsoup.connect(currentUrl)
+            .userAgent("Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36")
+            .timeout(8_000)
+            .maxBodySize(1_000_000)
+            .followRedirects(false)
+            .ignoreHttpErrors(true)
+            .execute()
+        if (response.statusCode() in 300..399) {
+            val location = response.header("location") ?: return@runCatching PreviewMetadata()
+            currentUrl = URI(currentUrl).resolve(location).toString()
+            continue
+        }
+        if (response.statusCode() !in 200..299) return@runCatching PreviewMetadata()
+        val document = response.parse()
+        val title = listOf(
+            document.selectFirst("meta[property=og:title]")?.attr("content"),
+            document.selectFirst("meta[name=twitter:title]")?.attr("content"),
+            document.selectFirst("meta[name=title]")?.attr("content"),
+            document.title()
+        ).firstOrNull { !it.isNullOrBlank() }?.trim().orEmpty()
+        val candidates = listOf(
+            document.selectFirst("meta[property=og:image]")?.attr("content"),
+            document.selectFirst("meta[property=og:image:secure_url]")?.attr("content"),
+            document.selectFirst("meta[name=twitter:image]")?.attr("content"),
+            document.selectFirst("meta[name=twitter:image:src]")?.attr("content"),
+            document.selectFirst("meta[itemprop=image]")?.attr("content"),
+            document.selectFirst("link[rel=image_src]")?.attr("href"),
+            document.selectFirst("video[poster]")?.attr("poster")
+        )
+        var thumbnail = ""
+        for (candidate in candidates) {
+            if (candidate.isNullOrBlank()) continue
+            val resolved = safePreviewImageUrl(URI(currentUrl).resolve(candidate.trim()).toString())
+            if (resolved.isNotBlank() && isPublicHttpsUrl(resolved)) {
+                thumbnail = resolved
+                break
+            }
+        }
+        val duration = listOf(
+            document.selectFirst("meta[property=video:duration]")?.attr("content"),
+            document.selectFirst("meta[itemprop=duration]")?.attr("content")
+        ).firstNotNullOfOrNull { it?.trim()?.toDoubleOrNull()?.toLong() }?.coerceAtLeast(0L) ?: 0L
+        return@runCatching PreviewMetadata(title, thumbnail, duration)
+    }
+    PreviewMetadata()
+}.getOrDefault(PreviewMetadata())
+
+private fun formatPreviewDuration(seconds: Long): String {
+    if (seconds <= 0L) return ""
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
+    val remainder = seconds % 60
+    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, remainder)
+    else "%d:%02d".format(minutes, remainder)
+}
+
 @Composable
 private fun VideoThumbnailPreview(rawUrl: String) {
+    val context = LocalContext.current
     val cleanUrl = rawUrl.trim()
     if (!cleanUrl.startsWith("https://", ignoreCase = true) &&
         !cleanUrl.startsWith("http://", ignoreCase = true)) return
 
-    var thumbnailUrl by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(false) }
-    var lookupFailed by remember { mutableStateOf(false) }
-    var imageLoaded by remember { mutableStateOf(false) }
-    var imageFailed by remember { mutableStateOf(false) }
+    val siteName = remember(cleanUrl) { mediaSiteName(cleanUrl) }
+    var metadata by remember(cleanUrl) {
+        mutableStateOf(PreviewMetadata(thumbnailUrl = youtubeThumbnailUrl(cleanUrl).orEmpty()))
+    }
+    var loading by remember(cleanUrl) { mutableStateOf(false) }
+    var lookupFailed by remember(cleanUrl) { mutableStateOf(false) }
+    var imageLoaded by remember(cleanUrl) { mutableStateOf(false) }
+    var imageFailed by remember(cleanUrl) { mutableStateOf(false) }
 
     LaunchedEffect(cleanUrl) {
-        thumbnailUrl = null
-        loading = false
+        metadata = PreviewMetadata(thumbnailUrl = youtubeThumbnailUrl(cleanUrl).orEmpty())
+        loading = true
         lookupFailed = false
         imageLoaded = false
         imageFailed = false
-        if (cleanUrl.isBlank()) return@LaunchedEffect
+        delay(650)
 
-        val youtubeThumbnail = youtubeThumbnailUrl(cleanUrl)
-        if (youtubeThumbnail != null) {
-            thumbnailUrl = youtubeThumbnail
-            return@LaunchedEffect
-        }
-
-        if (!cleanUrl.startsWith("https://", ignoreCase = true)) {
+        val isSafeUrl = withContext(Dispatchers.IO) { isPublicHttpsUrl(cleanUrl) }
+        if (!isSafeUrl) {
             lookupFailed = true
+            loading = false
             return@LaunchedEffect
         }
 
-        delay(450)
-        loading = true
-        val resolved = withContext(Dispatchers.IO) { resolvePageThumbnail(cleanUrl) }
-        thumbnailUrl = resolved
-        lookupFailed = resolved == null
+        // Prefer yt-dlp metadata: it understands extractor-specific pages such as
+        // Facebook watch/reel URLs that often hide their og:image from simple HTML fetches.
+        val extracted = resolveDownloaderPreview(context, cleanUrl)
+        if (extracted.thumbnailUrl.isNotBlank() || extracted.title.isNotBlank()) {
+            metadata = PreviewMetadata(
+                title = extracted.title,
+                thumbnailUrl = extracted.thumbnailUrl.ifBlank { metadata.thumbnailUrl },
+                durationSeconds = extracted.durationSeconds
+            )
+        }
+
+        // Generic public-page metadata remains a fallback for sites not yet supported
+        // by yt-dlp or pages that publish standard social preview tags.
+        if (metadata.thumbnailUrl.isBlank() || metadata.title.isBlank()) {
+            val page = withContext(Dispatchers.IO) { resolvePageMetadata(cleanUrl) }
+            metadata = PreviewMetadata(
+                title = metadata.title.ifBlank { page.title },
+                thumbnailUrl = metadata.thumbnailUrl.ifBlank { page.thumbnailUrl },
+                durationSeconds = metadata.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds
+            )
+        }
+        lookupFailed = metadata.thumbnailUrl.isBlank()
         loading = false
     }
 
@@ -922,37 +1206,68 @@ private fun VideoThumbnailPreview(rawUrl: String) {
             .background(Color(0xFF0C1525)),
         contentAlignment = Alignment.Center
     ) {
-        if (thumbnailUrl == null || !imageLoaded || imageFailed) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Icon(
-                    Icons.Default.VideoLibrary,
-                    contentDescription = null,
-                    tint = Cyan,
-                    modifier = Modifier.size(30.dp)
-                )
-                Text(
-                    when {
-                        loading -> "Finding video thumbnail…"
-                        lookupFailed || imageFailed -> "No preview image found for this link"
-                        else -> "Preparing video preview…"
-                    },
-                    color = TextMuted,
-                    fontSize = 11.sp
-                )
-            }
-        }
-        thumbnailUrl?.let { image ->
+        if (metadata.thumbnailUrl.isNotBlank() && !imageFailed) {
             AsyncImage(
-                model = image,
-                contentDescription = "Video thumbnail preview",
+                model = metadata.thumbnailUrl,
+                contentDescription = "$siteName video thumbnail",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
                 onSuccess = { imageLoaded = true },
                 onError = { imageFailed = true }
             )
+        }
+
+        if (!imageLoaded || imageFailed) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Default.VideoLibrary,
+                    contentDescription = null,
+                    tint = Cyan,
+                    modifier = Modifier.size(32.dp)
+                )
+                Text(
+                    when {
+                        loading -> "Finding preview from $siteName…"
+                        lookupFailed || imageFailed -> "Preview image isn't available for this link"
+                        else -> "Preparing preview…"
+                    },
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
+                if (metadata.title.isNotBlank()) {
+                    Text(
+                        metadata.title,
+                        color = TextMain,
+                        fontSize = 10.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Ink.copy(alpha = .9f))))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(siteName.uppercase(Locale.ROOT), color = Cyan, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
+                    val duration = formatPreviewDuration(metadata.durationSeconds)
+                    if (duration.isNotBlank()) {
+                        Spacer(Modifier.weight(1f))
+                        Text(duration, color = TextMain, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                if (metadata.title.isNotBlank()) {
+                    Text(metadata.title, color = TextMain, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
     }
 }

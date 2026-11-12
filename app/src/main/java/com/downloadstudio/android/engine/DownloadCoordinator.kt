@@ -169,6 +169,30 @@ object DownloadCoordinator {
         if (!running) pump()
     }
 
+    /** Retry a failed or stopped record without creating a duplicate history entry. */
+    fun retry(id: String) {
+        val item = _items.value.firstOrNull { it.id == id } ?: return
+        if (item.status !in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED)) return
+        if (active.containsKey(id)) {
+            update(id) { it.copy(error = "This download is still stopping. Try again in a moment.") }
+            return
+        }
+        cancelled.remove(id)
+        thermalDeferred.remove(id)
+        update(id) {
+            it.copy(
+                status = DownloadStatus.QUEUED,
+                progress = 0f,
+                speed = "—",
+                eta = "—",
+                downloaded = "—",
+                outputPath = "",
+                error = ""
+            )
+        }
+        pump()
+    }
+
     fun remove(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
         if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)) {

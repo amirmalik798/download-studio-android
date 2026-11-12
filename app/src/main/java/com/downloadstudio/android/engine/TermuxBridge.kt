@@ -47,8 +47,39 @@ object TermuxBridge {
         val state = "${destination.trimEnd('/')}/DownloadStudioState"
         val report = "$state/engine.txt"
         return "mkdir -p ${shellQuote(state)}; " +
-            "{ printf 'yt-dlp: '; yt-dlp --version 2>&1 || true; " +
-            "printf 'ffmpeg: '; ffmpeg -version 2>&1 | head -n 1 || true; } > ${shellQuote(report)}"
+            "{ if command -v yt-dlp >/dev/null 2>&1; then printf 'yt-dlp: READY (%s)\\n' \"\$(yt-dlp --version 2>/dev/null)\"; else printf 'yt-dlp: MISSING\\n'; fi; " +
+            "if command -v ffmpeg >/dev/null 2>&1; then printf 'ffmpeg: READY (%s)\\n' \"\$(ffmpeg -version 2>/dev/null | head -n 1)\"; else printf 'ffmpeg: MISSING\\n'; fi; } > ${shellQuote(report)}"
+    }
+
+    /**
+     * Resolve public media metadata without downloading the media itself.
+     * The app only reads the title, thumbnail and duration from a small result file.
+     * No cookies, account sessions or private browser data are passed to Termux.
+     */
+    fun previewMetadataScript(requestId: String, url: String, destination: String): String {
+        require(requestId.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid preview request id." }
+        require(url.length <= 4096 && (url.startsWith("https://") || url.startsWith("http://"))) {
+            "A valid media URL is required."
+        }
+        val q = ::shellQuote
+        val stateDir = "${destination.trimEnd('/')}/DownloadStudioState"
+        val result = "$stateDir/preview-$requestId.txt"
+        val raw = "$stateDir/preview-$requestId.json"
+        val temp = "$stateDir/preview-$requestId.tmp"
+        val parser = "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); " +
+            "clean=lambda v: str(v or '').replace('\\r',' ').replace('\\n',' ').strip(); " +
+            "print('DS_TITLE:'+clean(d.get('title'))); " +
+            "print('DS_THUMBNAIL:'+clean(d.get('thumbnail'))); " +
+            "print('DS_DURATION:'+clean(d.get('duration')))"
+        return "mkdir -p ${q(stateDir)}; " +
+            "rm -f ${q(raw)} ${q(temp)}; printf 'PENDING\\n' > ${q(result)}; " +
+            "if timeout 24s yt-dlp --ignore-config --no-warnings --no-playlist --skip-download --dump-single-json " +
+            "--socket-timeout 8 --retries 1 --extractor-retries 1 ${q(url)} > ${q(raw)} 2>/dev/null; then " +
+            "if python -c ${q(parser)} ${q(raw)} > ${q(temp)} 2>/dev/null; then " +
+            "printf 'DS_DONE\\n' >> ${q(temp)}; mv ${q(temp)} ${q(result)}; " +
+            "else printf 'DS_ERROR\\nDS_DONE\\n' > ${q(result)}; fi; " +
+            "else printf 'DS_ERROR\\nDS_DONE\\n' > ${q(result)}; fi; " +
+            "rm -f ${q(raw)} ${q(temp)}"
     }
 
     fun downloadScript(id: String, url: String, mode: String, destination: String): String {
@@ -65,11 +96,11 @@ object TermuxBridge {
             "--print ${q("before_dl:DS_THUMBNAIL:%(thumbnail)s")} " +
             "--print ${q("after_move:DS_COMPLETE:%(filepath)s")}"
         val preset = if (mode == "AUDIO") {
-            "-f bestaudio --extract-audio --audio-quality 0 --audio-format mp3 --embed-thumbnail"
+            "-f bestaudio/best --extract-audio --audio-quality 0 --audio-format mp3 --embed-thumbnail"
         } else {
-            // Preset copied semantically from the supplied Media Downloader yt-dlp extension:
-            // best H.264/MP4 video + M4A audio, then progressively broader fallbacks.
-            "-f ${q("bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best")}"
+            // Select the highest-ranked separate video and audio streams yt-dlp can provide.
+            // Fall back to the best combined format when separate streams are unavailable.
+            "-f ${q("bestvideo+bestaudio/best")}"
         }
         return "mkdir -p " + q(destination) + " " + q(stateDir) + "; " +
             "rm -f " + q(log) + " " + q(exit) + " " + q(pid) + "; " +
