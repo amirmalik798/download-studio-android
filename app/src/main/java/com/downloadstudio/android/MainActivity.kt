@@ -84,8 +84,13 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = scheme) {
                 DownloadStudioRoot(
                     onIncomingUrl = { url, mode ->
-                        runCatching { DownloadCoordinator.enqueue(url, mode) }
-                            .onFailure { Toast.makeText(this, it.message ?: "Could not add link", Toast.LENGTH_LONG).show() }
+                        runCatching {
+                            DownloadCoordinator.enqueue(url, mode)
+                            true
+                        }.getOrElse {
+                            Toast.makeText(this, it.message ?: "Could not add link", Toast.LENGTH_LONG).show()
+                            false
+                        }
                     }
                 )
             }
@@ -116,7 +121,7 @@ class MainActivity : ComponentActivity() {
 private enum class AppTab { HOME, DOWNLOADS, SETTINGS }
 
 @Composable
-private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
+private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Boolean) {
     val context = LocalContext.current
     val items by DownloadCoordinator.items.collectAsState()
     var tab by remember { mutableStateOf(AppTab.HOME) }
@@ -181,8 +186,11 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
                     onMode = { mode = it; QueueStore.setDefaultMode(context, it) }, onAdd = {
                         val clean = url.trim()
                         if (clean.startsWith("http://") || clean.startsWith("https://")) {
-                            onIncomingUrl(clean, mode); url = ""; tab = AppTab.DOWNLOADS
-                            Toast.makeText(context, "Added to your download queue", Toast.LENGTH_SHORT).show()
+                            if (onIncomingUrl(clean, mode)) {
+                                url = ""
+                                tab = AppTab.DOWNLOADS
+                                Toast.makeText(context, "Added to your download queue", Toast.LENGTH_SHORT).show()
+                            }
                         } else Toast.makeText(context, "Enter a valid HTTP or HTTPS link", Toast.LENGTH_SHORT).show()
                     }, onOpenItem = openDownload, onQueue = { tab = AppTab.DOWNLOADS }
                 )
@@ -299,7 +307,7 @@ private fun HomeScreen(
             }
         }
         if (items.isEmpty()) {
-            item { EmptyState("Nothing downloading yet", "Paste a link above, or open YouTube → Share → Download Studio.", Icons.Default.VideoLibrary) }
+            item { EmptyState("Nothing downloading yet", "Paste a media link above, or use Share from a supported app or browser.", Icons.Default.VideoLibrary) }
         } else {
             lazyItems(items.sortedByDescending { it.createdAt }.take(3), key = { it.id }) { item -> DownloadRow(item, onClick = { onOpenItem(item) }) }
         }
@@ -343,8 +351,8 @@ private fun ShareFeatureCard() {
                 Icon(Icons.Default.Share, null, tint = Violet)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text("Download from YouTube", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Text("In YouTube, tap Share and choose Download Studio. Then select Video or Audio.", color = TextMuted, fontSize = 10.sp)
+                Text("Share links into Download Studio", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text("From a supported app or browser, tap Share and choose Download Studio. Review the preview, select Video or Audio, then add the download.", color = TextMuted, fontSize = 10.sp)
             }
         }
     }
@@ -972,8 +980,13 @@ private suspend fun resolveTermuxPreview(context: android.content.Context, rawUr
 }
 
 private fun extractFirstUrl(raw: String): String? =
-    Regex("https?://[^\\s<>\\\\\"]+", RegexOption.IGNORE_CASE)
+    Regex("https?://\\S+", RegexOption.IGNORE_CASE)
         .find(raw)?.value?.trimEnd('.', ',', ')', ']')
+
+private fun isFacebookUrl(rawUrl: String): Boolean = runCatching {
+    val host = Uri.parse(rawUrl).host?.lowercase(Locale.ROOT)?.removePrefix("www.").orEmpty()
+    host == "fb.watch" || host == "facebook.com" || host.endsWith(".facebook.com")
+}.getOrDefault(false)
 
 private fun websiteName(rawUrl: String): String = runCatching {
     val host = Uri.parse(rawUrl).host?.lowercase(Locale.ROOT)?.removePrefix("www.").orEmpty()
@@ -1033,11 +1046,15 @@ private fun VideoThumbnailPreview(rawUrl: String) {
 
         loading = true
         delay(450)
-        val pagePreview = withContext(Dispatchers.IO) { resolvePagePreview(cleanUrl) } ?: MediaPreview()
+        // Facebook often suppresses public Open Graph images in its HTML response,
+        // while the same public yt-dlp extractor used for downloading exposes its thumbnail.
+        val pagePreview = if (isFacebookUrl(cleanUrl)) {
+            MediaPreview()
+        } else {
+            withContext(Dispatchers.IO) { resolvePagePreview(cleanUrl) } ?: MediaPreview()
+        }
         preview = pagePreview
         if (pagePreview.thumbnailUrl.isNullOrBlank()) {
-            // Some social sites expose their real thumbnail through yt-dlp metadata
-            // even when their public HTML page hides or omits og:image.
             val enginePreview = if (isPublicHttpsUrl(cleanUrl)) resolveTermuxPreview(context, cleanUrl) else null
             if (enginePreview != null) {
                 preview = MediaPreview(
