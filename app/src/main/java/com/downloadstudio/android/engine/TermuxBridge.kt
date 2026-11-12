@@ -47,8 +47,8 @@ object TermuxBridge {
         val state = "${destination.trimEnd('/')}/DownloadStudioState"
         val report = "$state/engine.txt"
         return "mkdir -p ${shellQuote(state)}; " +
-            "{ printf 'yt-dlp: '; yt-dlp --version 2>&1 || true; " +
-            "printf 'ffmpeg: '; ffmpeg -version 2>&1 | head -n 1 || true; } > ${shellQuote(report)}"
+            "{ if command -v yt-dlp >/dev/null 2>&1; then printf 'yt-dlp: READY (%s)\\n' \"$(yt-dlp --version 2>/dev/null)\"; else printf 'yt-dlp: MISSING\\n'; fi; " +
+            "if command -v ffmpeg >/dev/null 2>&1; then printf 'ffmpeg: READY (%s)\\n' \"$(ffmpeg -version 2>/dev/null | head -n 1)\"; else printf 'ffmpeg: MISSING\\n'; fi; } > ${shellQuote(report)}"
     }
 
     /**
@@ -67,7 +67,7 @@ object TermuxBridge {
         val raw = "$stateDir/preview-$requestId.json"
         val temp = "$stateDir/preview-$requestId.tmp"
         val parser = "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); " +
-            "clean=lambda v: str(v or '').replace('\\\\r',' ').replace('\\\\n',' ').strip(); " +
+            "clean=lambda v: str(v or '').replace('\\r',' ').replace('\\n',' ').strip(); " +
             "print('DS_TITLE:'+clean(d.get('title'))); " +
             "print('DS_THUMBNAIL:'+clean(d.get('thumbnail'))); " +
             "print('DS_DURATION:'+clean(d.get('duration')))"
