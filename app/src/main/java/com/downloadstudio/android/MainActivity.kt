@@ -116,7 +116,6 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
     var url by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf(DownloadMode.VIDEO) }
     var selected by remember { mutableStateOf<DownloadItem?>(null) }
-    var shareUrl by remember { mutableStateOf<String?>(null) }
     var setupReady by remember {
         mutableStateOf(StorageAccess.isDownloadLocationConfigured(context) &&
             TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context))
@@ -150,7 +149,9 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
     val incoming = MainActivity.pendingSharedUrl
     LaunchedEffect(incoming) {
         if (!incoming.isNullOrBlank()) {
-            shareUrl = incoming
+            // Use the existing editable Quick Download field for shared links.
+            url = incoming
+            tab = if (setupReady) AppTab.HOME else AppTab.SETTINGS
             MainActivity.pendingSharedUrl = null
         }
     }
@@ -186,34 +187,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
     selected?.let { item ->
         DownloadDetailsDialog(item, onDismiss = { selected = null })
     }
-    shareUrl?.let { shared ->
-        AlertDialog(
-            onDismissRequest = { shareUrl = null },
-            containerColor = Panel,
-            title = { Text("Add shared link", color = TextMain) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(shared, color = TextMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("Choose what to download", color = TextMain, fontWeight = FontWeight.SemiBold)
-                    ModeSelector(mode, onMode = { mode = it })
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (setupReady) {
-                        onIncomingUrl(shared, mode)
-                        shareUrl = null
-                        tab = AppTab.DOWNLOADS
-                    } else {
-                        shareUrl = null
-                        tab = AppTab.SETTINGS
-                        Toast.makeText(context, "Complete the required setup before adding downloads.", Toast.LENGTH_LONG).show()
-                    }
-                }) { Text(if (setupReady) "Add download" else "Complete setup first") }
-            },
-            dismissButton = { TextButton(onClick = { shareUrl = null }) { Text("Cancel") } }
-        )
-    }
+
 }
 
 @Composable
