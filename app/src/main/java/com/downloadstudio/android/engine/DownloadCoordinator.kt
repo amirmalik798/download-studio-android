@@ -119,12 +119,12 @@ object DownloadCoordinator {
 
     fun configurationChanged() = pump()
 
-    fun enqueue(url: String, mode: DownloadMode, title: String = "") : String {
+    fun enqueue(url: String, mode: DownloadMode, title: String = "", sourceUrl: String = url, thumbnailUrl: String = "") : String {
         val cleaned = url.trim()
         require(cleaned.startsWith("https://") || cleaned.startsWith("http://")) { "Please provide a valid HTTP or HTTPS link." }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val item = DownloadItem(
-            id = id, url = cleaned, title = title.ifBlank { titleFromUrl(cleaned) }, mode = mode
+            id = id, url = cleaned, title = title.ifBlank { titleFromUrl(sourceUrl) }, mode = mode, sourceUrl = sourceUrl, thumbnailUrl = thumbnailUrl
         )
         synchronized(stateLock) {
             _items.value = _items.value + item
