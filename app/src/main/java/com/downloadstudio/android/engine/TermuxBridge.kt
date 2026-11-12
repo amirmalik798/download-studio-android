@@ -51,6 +51,37 @@ object TermuxBridge {
             "printf 'ffmpeg: '; ffmpeg -version 2>&1 | head -n 1 || true; } > ${shellQuote(report)}"
     }
 
+    /**
+     * Resolve public media metadata without downloading the media itself.
+     * The app only reads the title, thumbnail and duration from a small result file.
+     * No cookies, account sessions or private browser data are passed to Termux.
+     */
+    fun previewMetadataScript(requestId: String, url: String, destination: String): String {
+        require(requestId.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid preview request id." }
+        require(url.length <= 4096 && (url.startsWith("https://") || url.startsWith("http://"))) {
+            "A valid media URL is required."
+        }
+        val q = ::shellQuote
+        val stateDir = "${destination.trimEnd('/')}/DownloadStudioState"
+        val result = "$stateDir/preview-$requestId.txt"
+        val raw = "$stateDir/preview-$requestId.json"
+        val temp = "$stateDir/preview-$requestId.tmp"
+        val parser = "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); " +
+            "clean=lambda v: str(v or '').replace('\\\\r',' ').replace('\\\\n',' ').strip(); " +
+            "print('DS_TITLE:'+clean(d.get('title'))); " +
+            "print('DS_THUMBNAIL:'+clean(d.get('thumbnail'))); " +
+            "print('DS_DURATION:'+clean(d.get('duration')))"
+        return "mkdir -p ${q(stateDir)}; " +
+            "rm -f ${q(raw)} ${q(temp)}; printf 'PENDING\\n' > ${q(result)}; " +
+            "if timeout 24s yt-dlp --ignore-config --no-warnings --no-playlist --skip-download --dump-single-json " +
+            "--socket-timeout 8 --retries 1 --extractor-retries 1 ${q(url)} > ${q(raw)} 2>/dev/null; then " +
+            "if python -c ${q(parser)} ${q(raw)} > ${q(temp)} 2>/dev/null; then " +
+            "printf 'DS_DONE\\n' >> ${q(temp)}; mv ${q(temp)} ${q(result)}; " +
+            "else printf 'DS_ERROR\\nDS_DONE\\n' > ${q(result)}; fi; " +
+            "else printf 'DS_ERROR\\nDS_DONE\\n' > ${q(result)}; fi; " +
+            "rm -f ${q(raw)} ${q(temp)}"
+    }
+
     fun downloadScript(id: String, url: String, mode: String, destination: String): String {
         val q = ::shellQuote
         val stateDir = "$destination/DownloadStudioState"
