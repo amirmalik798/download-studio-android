@@ -1,8 +1,10 @@
 package com.downloadstudio.android
 
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -43,6 +45,7 @@ import com.downloadstudio.android.engine.DownloadCoordinator
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.util.Locale
 
 private val Ink = Color(0xFF090E19)
@@ -113,7 +116,18 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
     var url by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf(DownloadMode.VIDEO) }
     var selected by remember { mutableStateOf<DownloadItem?>(null) }
-    var shareUrl by remember { mutableStateOf<String?>(null) }
+    var setupReady by remember {
+        mutableStateOf(StorageAccess.isDownloadLocationConfigured(context) &&
+            TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context))
+    }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            setupReady = StorageAccess.isDownloadLocationConfigured(context) &&
+                TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context)
+            if (!setupReady) tab = AppTab.SETTINGS
+            delay(750)
+        }
+    }
     val openDownload: (DownloadItem) -> Unit = { item ->
         if (item.status == DownloadStatus.COMPLETED) {
             val document = StorageAccess.findDownloadedDocument(context, item.outputPath)
@@ -135,7 +149,9 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
     val incoming = MainActivity.pendingSharedUrl
     LaunchedEffect(incoming) {
         if (!incoming.isNullOrBlank()) {
-            shareUrl = incoming
+            // Use the existing editable Quick Download field for shared links.
+            url = incoming
+            tab = if (setupReady) AppTab.HOME else AppTab.SETTINGS
             MainActivity.pendingSharedUrl = null
         }
     }
@@ -144,8 +160,8 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
         containerColor = Ink,
         bottomBar = {
             NavigationBar(containerColor = Color(0xFF0D1524), tonalElevation = 0.dp) {
-                NavigationBarItem(selected = tab == AppTab.HOME, onClick = { tab = AppTab.HOME }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
-                NavigationBarItem(selected = tab == AppTab.DOWNLOADS, onClick = { tab = AppTab.DOWNLOADS }, icon = { Icon(Icons.Default.Download, null) }, label = { Text("Downloads") })
+                NavigationBarItem(selected = tab == AppTab.HOME, enabled = setupReady, onClick = { if (setupReady) tab = AppTab.HOME }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
+                NavigationBarItem(selected = tab == AppTab.DOWNLOADS, enabled = setupReady, onClick = { if (setupReady) tab = AppTab.DOWNLOADS }, icon = { Icon(Icons.Default.Download, null) }, label = { Text("Downloads") })
                 NavigationBarItem(selected = tab == AppTab.SETTINGS, onClick = { tab = AppTab.SETTINGS }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
             }
         }
@@ -153,7 +169,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
         Column(Modifier.fillMaxSize().background(Ink).padding(padding)) {
             TopHeader(tab) { tab = AppTab.SETTINGS }
             when (tab) {
-                AppTab.HOME -> HomeScreen(
+                AppTab.HOME -> if (setupReady) HomeScreen(
                     items = items, url = url, onUrl = { url = it }, mode = mode,
                     onMode = { mode = it }, onAdd = {
                         val clean = url.trim()
@@ -162,8 +178,8 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
                         } else Toast.makeText(context, "Enter a valid HTTP or HTTPS link", Toast.LENGTH_SHORT).show()
                     }, onOpenItem = openDownload, onQueue = { tab = AppTab.DOWNLOADS }
                 )
-                AppTab.DOWNLOADS -> DownloadsScreen(items, onOpenItem = openDownload)
-                AppTab.SETTINGS -> SettingsScreen()
+                AppTab.DOWNLOADS -> if (setupReady) DownloadsScreen(items, onOpenItem = openDownload)
+                AppTab.SETTINGS -> SettingsScreen(setupRequired = !setupReady)
             }
         }
     }
@@ -171,24 +187,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
     selected?.let { item ->
         DownloadDetailsDialog(item, onDismiss = { selected = null })
     }
-    shareUrl?.let { shared ->
-        AlertDialog(
-            onDismissRequest = { shareUrl = null },
-            containerColor = Panel,
-            title = { Text("Add shared link", color = TextMain) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(shared, color = TextMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("Choose what to download", color = TextMain, fontWeight = FontWeight.SemiBold)
-                    ModeSelector(mode, onMode = { mode = it })
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { onIncomingUrl(shared, mode); shareUrl = null; tab = AppTab.DOWNLOADS }) { Text("Add download") }
-            },
-            dismissButton = { TextButton(onClick = { shareUrl = null }) { Text("Cancel") } }
-        )
-    }
+
 }
 
 @Composable
@@ -331,7 +330,7 @@ private enum class DownloadSort(val label: String) {
     DATE_OLDEST("Date · Oldest first")
 }
 
-private enum class DownloadFilter { ALL, VIDEO, AUDIO }
+private enum class DownloadFilter { ALL, VIDEO, AUDIO, DOWNLOADING, DOWNLOADED }
 
 @Composable
 private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem) -> Unit) {
@@ -339,6 +338,9 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
     var filter by remember { mutableStateOf(DownloadFilter.ALL) }
     var sort by remember { mutableStateOf(DownloadSort.DATE_NEWEST) }
     var sortExpanded by remember { mutableStateOf(false) }
+    var toolsExpanded by remember { mutableStateOf(false) }
+    var showClearConfirmation by remember { mutableStateOf(false) }
+    var itemPendingRemoval by remember { mutableStateOf<DownloadItem?>(null) }
     val active = items.count { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }
     val visibleItems = remember(items, search, filter, sort) {
         val matches = items.filter { item ->
@@ -346,6 +348,8 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 DownloadFilter.ALL -> true
                 DownloadFilter.VIDEO -> item.mode == DownloadMode.VIDEO
                 DownloadFilter.AUDIO -> item.mode == DownloadMode.AUDIO
+                DownloadFilter.DOWNLOADING -> item.status in setOf(DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)
+                DownloadFilter.DOWNLOADED -> item.status == DownloadStatus.COMPLETED
             }
             categoryMatches && displayTitle(item).contains(search.trim(), ignoreCase = true)
         }
@@ -364,61 +368,82 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 Text("${items.size} items · $active active · ${items.count { it.status == DownloadStatus.COMPLETED }} completed", color = TextMuted, fontSize = 11.sp)
             }
             Text("${visibleItems.size}", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            IconButton(onClick = { toolsExpanded = !toolsExpanded }) {
+                Icon(if (toolsExpanded) Icons.Default.Close else Icons.Default.Search, "Search and filters", tint = Cyan)
+            }
+            IconButton(onClick = { showClearConfirmation = true }, enabled = items.isNotEmpty()) {
+                Icon(Icons.Default.DeleteSweep, "Clear downloads list", tint = if (items.isNotEmpty()) Red else TextMuted)
+            }
         }
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = search,
-            onValueChange = { search = it },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Search by name", color = TextMuted) },
-            leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
-            trailingIcon = {
-                if (search.isNotBlank()) IconButton(onClick = { search = "" }) { Icon(Icons.Default.Close, "Clear search", tint = TextMuted) }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = TextMain, unfocusedTextColor = TextMain,
-                focusedBorderColor = Blue, unfocusedBorderColor = Line,
-                cursorColor = Cyan, focusedContainerColor = Color(0xFF0C1525), unfocusedContainerColor = Color(0xFF0C1525)
-            )
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-            FilterChip(selected = filter == DownloadFilter.ALL, onClick = { filter = DownloadFilter.ALL }, label = { Text("All") })
-            FilterChip(selected = filter == DownloadFilter.VIDEO, onClick = { filter = DownloadFilter.VIDEO }, label = { Text("Video") })
-            FilterChip(selected = filter == DownloadFilter.AUDIO, onClick = { filter = DownloadFilter.AUDIO }, label = { Text("Audio") })
-        }
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text("SORT BY", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
-            Spacer(Modifier.weight(1f))
-            Box {
-                TextButton(onClick = { sortExpanded = true }) {
-                    Icon(Icons.Default.Sort, null, tint = Cyan, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text(sort.label, color = Cyan, fontSize = 11.sp)
-                    Icon(Icons.Default.ArrowDropDown, null, tint = Cyan)
+        AnimatedVisibility(visible = toolsExpanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = search, onValueChange = { search = it }, modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Search by name", color = TextMuted) },
+                    leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
+                    trailingIcon = { if (search.isNotBlank()) IconButton(onClick = { search = "" }) { Icon(Icons.Default.Close, "Clear search", tint = TextMuted) } },
+                    singleLine = true, shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = TextMain, unfocusedTextColor = TextMain,
+                        focusedBorderColor = Blue, unfocusedBorderColor = Line, cursorColor = Cyan,
+                        focusedContainerColor = Color(0xFF0C1525), unfocusedContainerColor = Color(0xFF0C1525)))
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(selected = filter == DownloadFilter.ALL, onClick = { filter = DownloadFilter.ALL }, label = { Text("All") })
+                    FilterChip(selected = filter == DownloadFilter.VIDEO, onClick = { filter = DownloadFilter.VIDEO }, label = { Text("Video") })
+                    FilterChip(selected = filter == DownloadFilter.AUDIO, onClick = { filter = DownloadFilter.AUDIO }, label = { Text("Audio") })
                 }
-                DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
-                    DownloadSort.values().forEach { option ->
-                        DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortExpanded = false })
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(selected = filter == DownloadFilter.DOWNLOADING, onClick = { filter = DownloadFilter.DOWNLOADING }, label = { Text("Downloading") })
+                    FilterChip(selected = filter == DownloadFilter.DOWNLOADED, onClick = { filter = DownloadFilter.DOWNLOADED }, label = { Text("Downloaded") })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("SORT BY", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
+                    Spacer(Modifier.weight(1f))
+                    Box {
+                        TextButton(onClick = { sortExpanded = true }) {
+                            Icon(Icons.Default.Sort, null, tint = Cyan, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(5.dp)); Text(sort.label, color = Cyan, fontSize = 11.sp)
+                            Icon(Icons.Default.ArrowDropDown, null, tint = Cyan)
+                        }
+                        DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
+                            DownloadSort.values().forEach { option -> DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortExpanded = false }) }
+                        }
                     }
                 }
             }
+        }
+        if (showClearConfirmation) {
+            AlertDialog(onDismissRequest = { showClearConfirmation = false }, containerColor = Panel,
+                title = { Text("Clear downloads list?", color = TextMain) },
+                text = { Text("This removes download records and stops active jobs. Files already saved on your device will not be deleted.", color = TextMuted) },
+                confirmButton = { TextButton(onClick = { DownloadCoordinator.clearAll(); showClearConfirmation = false }) { Text("Clear list", color = Red) } },
+                dismissButton = { TextButton(onClick = { showClearConfirmation = false }) { Text("Cancel") } })
+        }
+        itemPendingRemoval?.let { item ->
+            AlertDialog(onDismissRequest = { itemPendingRemoval = null }, containerColor = Panel,
+                title = { Text("Remove from downloads?", color = TextMain) },
+                text = { Text("\"${displayTitle(item)}\" will be removed from Download Studio. The actual media file on your device will not be deleted.", color = TextMuted) },
+                confirmButton = {
+                    TextButton(onClick = { DownloadCoordinator.remove(item.id); itemPendingRemoval = null }) {
+                        Text("Remove", color = Red)
+                    }
+                },
+                dismissButton = { TextButton(onClick = { itemPendingRemoval = null }) { Text("Cancel") } })
         }
         Spacer(Modifier.height(5.dp))
         when {
             items.isEmpty() -> EmptyState("No downloads yet", "Paste a link or use YouTube → Share → Download Studio.", Icons.Default.CloudDownload)
             visibleItems.isEmpty() -> EmptyState("No matching downloads", "Try another search term or category filter.", Icons.Default.Search)
             else -> LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
-                lazyItems(visibleItems, key = { it.id }) { item -> DownloadRow(item, onClick = { onOpenItem(item) }) }
+                lazyItems(visibleItems, key = { it.id }) { item ->
+                    DownloadRow(item, onClick = { onOpenItem(item) }, onRemoveRequest = { itemPendingRemoval = item })
+                }
             }
         }
     }
 }
 
 @Composable
-private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
+private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest: (() -> Unit)? = null) {
+    val context = LocalContext.current
     val color = when (item.status) {
         DownloadStatus.COMPLETED -> Green
         DownloadStatus.FAILED -> Red
@@ -433,7 +458,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
     ) {
         Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                val thumbnailUrl = youtubeThumbnailUrl(item.url)
+                val thumbnailUrl = item.thumbnailUrl.takeIf { it.isNotBlank() } ?: youtubeThumbnailUrl(item.url)
                 var thumbnailFailed by remember(item.id, thumbnailUrl) { mutableStateOf(false) }
                 Box(Modifier.size(width = 92.dp, height = 58.dp).clip(RoundedCornerShape(10.dp)).background(if (item.mode == DownloadMode.VIDEO) Blue.copy(alpha = .15f) else Green.copy(alpha = .15f)), contentAlignment = Alignment.Center) {
                     if (thumbnailUrl != null && !thumbnailFailed) {
@@ -455,6 +480,31 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
                     Text(item.status.name.lowercase().replaceFirstChar { it.titlecase(Locale.getDefault()) }, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 }
+                var actionsExpanded by remember(item.id) { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { actionsExpanded = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.MoreVert, "Download actions", tint = TextMuted)
+                    }
+                    DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
+                        if (item.status == DownloadStatus.COMPLETED) {
+                            DropdownMenuItem(text = { Text("View in folder") },
+                                leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
+                                onClick = {
+                                    actionsExpanded = false
+                                    openDownloadedFolder(context, item)
+                                })
+                            DropdownMenuItem(text = { Text("Share file") },
+                                leadingIcon = { Icon(Icons.Default.Share, null) },
+                                onClick = {
+                                    actionsExpanded = false
+                                    shareDownloadedFile(context, item)
+                                })
+                        }
+                        DropdownMenuItem(text = { Text("Remove from downloads") },
+                            leadingIcon = { Icon(Icons.Default.RemoveCircleOutline, null) },
+                            onClick = { actionsExpanded = false; onRemoveRequest?.invoke() })
+                    }
+                }
             }
             if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED)) {
                 LinearProgressIndicator(progress = { item.progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape), color = Blue, trackColor = Line)
@@ -473,6 +523,45 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit) {
     }
 }
 
+private fun openDownloadedFolder(context: android.content.Context, item: DownloadItem) {
+    val folder = StorageAccess.findDownloadedFolder(context, item.outputPath)
+    if (folder == null) {
+        Toast.makeText(context, "The download folder could not be found.", Toast.LENGTH_LONG).show()
+        return
+    }
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(folder.uri, DocumentsContract.Document.MIME_TYPE_DIR)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching { context.startActivity(intent) }
+        .onFailure {
+            Toast.makeText(context, "No file manager on this device can open this folder.", Toast.LENGTH_LONG).show()
+        }
+}
+
+private fun shareDownloadedFile(context: android.content.Context, item: DownloadItem) {
+    val document = StorageAccess.findDownloadedDocument(context, item.outputPath)
+    if (document == null) {
+        Toast.makeText(context, "The downloaded file could not be found.", Toast.LENGTH_LONG).show()
+        return
+    }
+    val mimeType = document.type
+        ?: StorageAccess.mimeTypeForFileName(document.name.orEmpty())
+        ?: "*/*"
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = mimeType
+        putExtra(Intent.EXTRA_STREAM, document.uri)
+        putExtra(Intent.EXTRA_SUBJECT, displayTitle(item))
+        clipData = ClipData.newUri(context.contentResolver, displayTitle(item), document.uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching {
+        context.startActivity(Intent.createChooser(shareIntent, "Share " + displayTitle(item)))
+    }.onFailure {
+        Toast.makeText(context, "No compatible app is available to share this file.", Toast.LENGTH_LONG).show()
+    }
+}
+
 @Composable
 private fun EmptyState(title: String, detail: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
     Column(Modifier.fillMaxWidth().padding(vertical = 46.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -483,10 +572,10 @@ private fun EmptyState(title: String, detail: String, icon: androidx.compose.ui.
 }
 
 @Composable
-private fun SettingsScreen() {
+private fun SettingsScreen(setupRequired: Boolean = false) {
     val context = LocalContext.current
     var basePath by remember { mutableStateOf(QueueStore.basePath(context).orEmpty()) }
-    var treeGranted by remember { mutableStateOf(!QueueStore.treeUri(context).isNullOrBlank()) }
+    var treeGranted by remember { mutableStateOf(StorageAccess.isDownloadLocationConfigured(context)) }
     var maxConcurrent by remember { mutableIntStateOf(QueueStore.maxConcurrent(context)) }
     var termuxInstalled by remember { mutableStateOf(TermuxBridge.isInstalled(context)) }
     var termuxPermission by remember { mutableStateOf(TermuxBridge.hasRunPermission(context)) }
@@ -494,22 +583,38 @@ private fun SettingsScreen() {
     val clipboard = LocalClipboardManager.current
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
-            runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+            val permissionFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             val path = StorageAccess.termuxPathForTreeUri(uri)
-            if (path != null) {
+            val permissionGranted = runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, permissionFlags)
+                context.contentResolver.persistedUriPermissions.any {
+                    it.uri == uri && it.isReadPermission && it.isWritePermission
+                }
+            }.getOrDefault(false)
+            if (path != null && permissionGranted) {
                 QueueStore.setTree(context, uri.toString(), path)
-                basePath = path; treeGranted = true
+                basePath = path
+                treeGranted = StorageAccess.isDownloadLocationConfigured(context)
                 DownloadCoordinator.configurationChanged()
-                Toast.makeText(context, "Downloads folder saved", Toast.LENGTH_SHORT).show()
-            } else Toast.makeText(context, "Could not resolve the selected folder. Choose a folder on internal storage.", Toast.LENGTH_LONG).show()
+                if (treeGranted) Toast.makeText(context, "Downloads folder saved", Toast.LENGTH_SHORT).show()
+                else Toast.makeText(context, "Android did not grant writable folder access. Please choose the folder again.", Toast.LENGTH_LONG).show()
+            } else Toast.makeText(context, "Folder access was not granted. Choose a writable folder on internal storage.", Toast.LENGTH_LONG).show()
         }
     }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Settings", color = TextMain, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
                 Text("Configure the on-device download engine", color = TextMuted, fontSize = 12.sp)
+            }
+            if (setupRequired) {
+                Card(colors = CardDefaults.cardColors(containerColor = Panel2), border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = .65f)), shape = RoundedCornerShape(16.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("SETUP REQUIRED", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Configure a writable download folder, install Termux, and grant Download Studio the Run commands in Termux permission. Home and Downloads stay locked until all checks pass.", color = TextMain, fontSize = 11.sp, lineHeight = 16.sp)
+                    }
+                }
             }
         }
         item {
@@ -597,9 +702,13 @@ private fun SettingsScreen() {
         }
     }
     LaunchedEffect(Unit) {
-        termuxInstalled = TermuxBridge.isInstalled(context)
-        termuxPermission = TermuxBridge.hasRunPermission(context)
-        treeGranted = !QueueStore.treeUri(context).isNullOrBlank()
+        while (isActive) {
+            termuxInstalled = TermuxBridge.isInstalled(context)
+            termuxPermission = TermuxBridge.hasRunPermission(context)
+            treeGranted = StorageAccess.isDownloadLocationConfigured(context)
+            basePath = QueueStore.basePath(context).orEmpty()
+            delay(750)
+        }
     }
     LaunchedEffect(engineStatus) {
         if (engineStatus == "Checking…") {
