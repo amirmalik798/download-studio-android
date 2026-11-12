@@ -70,6 +70,7 @@ def main() -> int:
     require("CookieManager" in browser_activity and "setAcceptThirdPartyCookies(this, false)" in browser_activity, "First-party WebView session login missing")
     require("c_user" in browser_store and "sessionid" in browser_store, "Facebook/Instagram signed-in state checks missing")
     require("WebStorage.getInstance().deleteOrigin" in browser_store and "fun remove(context" in browser_store, "Platform session disconnect cleanup missing")
+    require("purgeLegacyCookieCopies" in browser_store and "purgeLegacyCookieCopies(this)" in main_activity, "Legacy encrypted cookie copies are not purged on startup")
     require("evaluateJavascript" in resolver_activity and "isAllowedMediaUrl" in resolver_activity, "Browser media URL resolver or CDN validation missing")
     require("EXTRA_MEDIA_URL" in main_activity and "isFacebookOrInstagramPage" in main_activity, "Facebook/Instagram Quick Download routing missing")
     require("sourceUrl" in item_model and "sourceUrl" in queue_store and 'DetailLine("Source", item.sourceUrl' in main_activity, "Original source URL persistence/display missing")
