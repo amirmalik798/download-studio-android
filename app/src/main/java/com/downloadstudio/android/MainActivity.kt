@@ -45,6 +45,7 @@ import com.downloadstudio.android.engine.DownloadCoordinator
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -255,12 +256,6 @@ private fun HomeScreen(
     val active = items.count { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }
     val completed = items.count { it.status == DownloadStatus.COMPLETED }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Your media,\nbeautifully managed.", color = TextMain, fontSize = 28.sp, lineHeight = 33.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Paste a link, check the preview, and download.", color = TextMuted, fontSize = 13.sp)
-            }
-        }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -551,39 +546,63 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     IconButton(onClick = { actionsExpanded = true }, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.MoreVert, "Download actions", tint = TextMuted)
                     }
-                    DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
+                    DropdownMenu(
+                        expanded = actionsExpanded,
+                        onDismissRequest = { actionsExpanded = false },
+                        modifier = Modifier.widthIn(min = 212.dp),
+                        shape = RoundedCornerShape(15.dp),
+                        containerColor = Panel2,
+                        tonalElevation = 0.dp,
+                        shadowElevation = 14.dp,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Line)
+                    ) {
                         if (item.status == DownloadStatus.FAILED || item.status == DownloadStatus.STOPPED) {
-                            DropdownMenuItem(text = { Text("Retry download") },
-                                leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                            DropdownMenuItem(
+                                text = { Text("Retry download", color = TextMain, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.Refresh, null, tint = Cyan) },
+                                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
                                 onClick = {
                                     actionsExpanded = false
                                     DownloadCoordinator.retry(item.id)
-                                })
+                                }
+                            )
                         }
-                        DropdownMenuItem(text = { Text("Copy source link") },
-                            leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                        DropdownMenuItem(
+                            text = { Text("Copy source link", color = TextMain, fontSize = 13.sp) },
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, null, tint = Cyan) },
+                            contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
                             onClick = {
                                 actionsExpanded = false
                                 clipboard.setText(AnnotatedString(item.url))
                                 Toast.makeText(context, "Source link copied.", Toast.LENGTH_SHORT).show()
-                            })
+                            }
+                        )
                         if (item.status == DownloadStatus.COMPLETED) {
-                            DropdownMenuItem(text = { Text("View in folder") },
-                                leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
+                            DropdownMenuItem(
+                                text = { Text("View in folder", color = TextMain, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.FolderOpen, null, tint = Cyan) },
+                                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
                                 onClick = {
                                     actionsExpanded = false
                                     openDownloadedFolder(context, item)
-                                })
-                            DropdownMenuItem(text = { Text("Share file") },
-                                leadingIcon = { Icon(Icons.Default.Share, null) },
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Share file", color = TextMain, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.Share, null, tint = Violet) },
+                                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
                                 onClick = {
                                     actionsExpanded = false
                                     shareDownloadedFile(context, item)
-                                })
+                                }
+                            )
                         }
-                        DropdownMenuItem(text = { Text("Remove from downloads") },
-                            leadingIcon = { Icon(Icons.Default.RemoveCircleOutline, null) },
-                            onClick = { actionsExpanded = false; onRemoveRequest?.invoke() })
+                        DropdownMenuItem(
+                            text = { Text("Remove from downloads", color = Red, fontSize = 13.sp) },
+                            leadingIcon = { Icon(Icons.Default.RemoveCircleOutline, null, tint = Red) },
+                            contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
+                            onClick = { actionsExpanded = false; onRemoveRequest?.invoke() }
+                        )
                     }
                 }
             }
@@ -610,14 +629,61 @@ private fun openDownloadedFolder(context: android.content.Context, item: Downloa
         Toast.makeText(context, "The download folder could not be found.", Toast.LENGTH_LONG).show()
         return
     }
-    val intent = Intent(Intent.ACTION_VIEW).apply {
+
+    // Open the actual SAF folder URI and provide the shared-storage path for
+    // file managers implementing the OpenIntents directory-view contract.
+    val absolutePath = item.outputPath.substringBeforeLast('/', "").ifBlank {
+        QueueStore.basePath(context).orEmpty()
+    }
+    val directoryIntent = Intent(Intent.ACTION_VIEW).apply {
+        addCategory(Intent.CATEGORY_DEFAULT)
         setDataAndType(folder.uri, DocumentsContract.Document.MIME_TYPE_DIR)
+        putExtra("org.openintents.extra.ABSOLUTE_PATH", absolutePath)
+        clipData = ClipData.newUri(context.contentResolver, folder.name ?: "Download folder", folder.uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
-    runCatching { context.startActivity(intent) }
-        .onFailure {
-            Toast.makeText(context, "No file manager on this device can open this folder.", Toast.LENGTH_LONG).show()
+
+    // Try the two installed managers requested by the user, in preferred order.
+    // AndroidManifest.xml includes package visibility declarations for Android 11+.
+    val preferredPackages = listOf(
+        "com.sec.android.app.myfiles",
+        "com.alphainventor.filemanager"
+    )
+    for (packageName in preferredPackages) {
+        val target = Intent(directoryIntent).setPackage(packageName)
+        val launched = runCatching {
+            if (target.resolveActivity(context.packageManager) != null) {
+                context.startActivity(target)
+                true
+            } else {
+                false
+            }
+        }.getOrDefault(false)
+        if (launched) return
+    }
+
+    // Otherwise offer any installed file manager that supports directory VIEW.
+    val hasDirectoryHandler = runCatching {
+        directoryIntent.resolveActivity(context.packageManager) != null
+    }.getOrDefault(false)
+    if (hasDirectoryHandler) {
+        runCatching {
+            context.startActivity(Intent.createChooser(directoryIntent, "Open folder with"))
+        }.onFailure {
+            Toast.makeText(context, "Could not open the download folder.", Toast.LENGTH_LONG).show()
         }
+        return
+    }
+
+    // Final fallback: show the system document picker at the selected folder.
+    runCatching {
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            putExtra(DocumentsContract.EXTRA_INITIAL_URI, folder.uri)
+        }
+        context.startActivity(picker)
+    }.onFailure {
+        Toast.makeText(context, "No compatible file manager could open this folder.", Toast.LENGTH_LONG).show()
+    }
 }
 
 private fun shareDownloadedFile(context: android.content.Context, item: DownloadItem) {
@@ -1061,25 +1127,29 @@ private suspend fun resolveDownloaderPreview(
     val requestId = java.util.UUID.randomUUID().toString().replace("-", "")
     val statePath = "DownloadStudioState/preview-$requestId.txt"
     val script = TermuxBridge.previewMetadataScript(requestId, rawUrl, destination)
-    val launch = withContext(Dispatchers.IO) {
-        TermuxBridge.runShell(context, script, "Download Studio · preview lookup", true)
-    }
-    if (launch.isFailure) return PreviewMetadata()
+    try {
+        val launch = withContext(Dispatchers.IO) {
+            TermuxBridge.runShell(context, script, "Download Studio · preview lookup", true)
+        }
+        if (launch.isFailure) return PreviewMetadata()
 
-    repeat(62) {
-        delay(400)
-        val state = withContext(Dispatchers.IO) { StorageAccess.readState(context, statePath) }
-        if (!state.isNullOrBlank() && state.contains("DS_DONE")) {
-            withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
-            val parsed = parsePreviewResult(state)
-            val safeThumbnail = if (parsed.thumbnailUrl.isBlank()) "" else withContext(Dispatchers.IO) {
-                parsed.thumbnailUrl.takeIf { isPublicHttpsUrl(it) }.orEmpty()
+        repeat(62) {
+            delay(400)
+            val state = withContext(Dispatchers.IO) { StorageAccess.readState(context, statePath) }
+            if (!state.isNullOrBlank() && state.contains("DS_DONE")) {
+                val parsed = parsePreviewResult(state)
+                val safeThumbnail = if (parsed.thumbnailUrl.isBlank()) "" else withContext(Dispatchers.IO) {
+                    parsed.thumbnailUrl.takeIf { isPublicHttpsUrl(it) }.orEmpty()
+                }
+                return parsed.copy(thumbnailUrl = safeThumbnail)
             }
-            return parsed.copy(thumbnailUrl = safeThumbnail)
+        }
+        return PreviewMetadata()
+    } finally {
+        withContext(NonCancellable + Dispatchers.IO) {
+            StorageAccess.deleteState(context, statePath)
         }
     }
-    withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
-    return PreviewMetadata()
 }
 
 private fun resolvePageMetadata(rawUrl: String): PreviewMetadata = runCatching {

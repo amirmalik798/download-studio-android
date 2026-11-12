@@ -4,6 +4,13 @@
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
     <queries>
         <package android:name="com.termux" />
+        <package android:name="com.sec.android.app.myfiles" />
+        <package android:name="com.alphainventor.filemanager" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:mimeType="vnd.android.document/directory" />
+        </intent>
     </queries>
     <application
         android:allowBackup="false"
