@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.downloadstudio.android.auth.BrowserMediaResolverActivity
 import com.downloadstudio.android.auth.BrowserSessionActivity
 import com.downloadstudio.android.auth.BrowserSessionStore
 import com.downloadstudio.android.data.DownloadItem
@@ -78,8 +79,8 @@ class MainActivity : ComponentActivity() {
             )
             MaterialTheme(colorScheme = scheme) {
                 DownloadStudioRoot(
-                    onIncomingUrl = { url, mode ->
-                        runCatching { DownloadCoordinator.enqueue(url, mode) }
+                    onIncomingUrl = { url, mode, title, sourceUrl, thumbnailUrl ->
+                        runCatching { DownloadCoordinator.enqueue(url, mode, title, sourceUrl, thumbnailUrl) }
                             .onFailure { Toast.makeText(this, it.message ?: "Could not add link", Toast.LENGTH_LONG).show() }
                     }
                 )
@@ -111,13 +112,34 @@ class MainActivity : ComponentActivity() {
 private enum class AppTab { HOME, DOWNLOADS, SETTINGS }
 
 @Composable
-private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
+private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode, String, String, String) -> Unit) {
     val context = LocalContext.current
     val items by DownloadCoordinator.items.collectAsState()
     var tab by remember { mutableStateOf(AppTab.HOME) }
     var url by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf(DownloadMode.VIDEO) }
     var selected by remember { mutableStateOf<DownloadItem?>(null) }
+    var resolvingMode by remember { mutableStateOf(DownloadMode.VIDEO) }
+    val mediaResolver = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val data = result.data
+            val mediaUrl = data?.getStringExtra(BrowserMediaResolverActivity.EXTRA_MEDIA_URL).orEmpty()
+            val sourceUrl = data?.getStringExtra(BrowserMediaResolverActivity.EXTRA_SOURCE_URL).orEmpty()
+            val title = data?.getStringExtra(BrowserMediaResolverActivity.EXTRA_TITLE).orEmpty()
+            val thumbnail = data?.getStringExtra(BrowserMediaResolverActivity.EXTRA_THUMBNAIL).orEmpty()
+            val host = runCatching { Uri.parse(mediaUrl).host?.lowercase().orEmpty() }.getOrDefault("")
+            val trustedCdn = host.endsWith(".fbcdn.net") || host == "fbcdn.net" ||
+                host.endsWith(".fbsbx.com") || host == "fbsbx.com" ||
+                host.endsWith(".cdninstagram.com") || host == "cdninstagram.com"
+            if (mediaUrl.startsWith("https://") && trustedCdn && sourceUrl.isNotBlank()) {
+                onIncomingUrl(mediaUrl, resolvingMode, title, sourceUrl, thumbnail)
+                url = ""
+                tab = AppTab.DOWNLOADS
+            } else {
+                Toast.makeText(context, "The browser did not return a supported media CDN link.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
     var setupReady by remember {
         mutableStateOf(StorageAccess.isDownloadLocationConfigured(context) &&
             TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context))
@@ -175,8 +197,13 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
                     items = items, url = url, onUrl = { url = it }, mode = mode,
                     onMode = { mode = it }, onAdd = {
                         val clean = url.trim()
-                        if (clean.startsWith("http://") || clean.startsWith("https://")) {
-                            onIncomingUrl(clean, mode); url = ""; tab = AppTab.DOWNLOADS
+                        if (clean.startsWith("https://") && isFacebookOrInstagramPage(clean)) {
+                            resolvingMode = mode
+                            mediaResolver.launch(BrowserMediaResolverActivity.intent(context, clean))
+                        } else if (clean.startsWith("http://") || clean.startsWith("https://")) {
+                            onIncomingUrl(clean, mode, "", clean, "")
+                            url = ""
+                            tab = AppTab.DOWNLOADS
                         } else Toast.makeText(context, "Enter a valid HTTP or HTTPS link", Toast.LENGTH_SHORT).show()
                     }, onOpenItem = openDownload, onQueue = { tab = AppTab.DOWNLOADS }
                 )
@@ -191,6 +218,16 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Unit) {
     }
 
 }
+
+
+private fun isFacebookOrInstagramPage(rawUrl: String): Boolean = runCatching {
+    val uri = Uri.parse(rawUrl)
+    if (uri.scheme != "https") return false
+    val host = uri.host?.lowercase().orEmpty()
+    host == "facebook.com" || host.endsWith(".facebook.com") ||
+        host == "fb.watch" || host.endsWith(".fb.watch") ||
+        host == "instagram.com" || host.endsWith(".instagram.com")
+}.getOrDefault(false)
 
 @Composable
 private fun TopHeader(tab: AppTab, onSettings: () -> Unit) {
@@ -797,7 +834,7 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
                 DetailLine("Speed", item.speed)
                 DetailLine("ETA", item.eta)
-                DetailLine("Source", item.url)
+                DetailLine("Source", item.sourceUrl.ifBlank { item.url })
                 if (item.outputPath.isNotBlank()) DetailLine("Saved file", item.outputPath)
                 if (item.error.isNotBlank()) Text(item.error, color = Red, fontSize = 11.sp)
             }
@@ -850,11 +887,11 @@ private fun displayTitle(item: DownloadItem): String {
     val rawName = item.outputPath.substringAfterLast("/")
     val fileName = rawName.substringBeforeLast(".", rawName)
     if (fileName.isNotBlank()) {
-        val id = youtubeVideoId(item.url)
+        val id = youtubeVideoId(item.sourceUrl)
         val extracted = if (id != null) fileName.removeSuffix("-$id") else fileName
         if (extracted.isNotBlank()) return extracted
     }
-    return if (youtubeVideoId(item.url) != null) "YouTube video" else title.ifBlank { "Downloaded media" }
+    return if (youtubeVideoId(item.sourceUrl) != null) "YouTube video" else title.ifBlank { "Downloaded media" }
 }
 
 private fun downloadTimestamp(item: DownloadItem): Long = item.completedAt.takeIf { it > 0L } ?: item.createdAt
