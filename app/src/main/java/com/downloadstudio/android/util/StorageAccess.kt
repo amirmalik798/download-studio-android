@@ -62,40 +62,6 @@ object StorageAccess {
         }
     }.getOrNull()
 
-    /**
-     * Writes a short-lived transfer file inside the user-selected SAF folder.
-     * Termux immediately moves it into its private home directory and deletes this copy.
-     */
-    fun writeTemporaryText(context: Context, relativeName: String, content: String): String? = runCatching {
-        val parts = relativeName.split('/').filter { it.isNotBlank() }
-        require(parts.isNotEmpty() && parts.none { it == "." || it == ".." })
-        var node = treeRoot(context) ?: return null
-        for (part in parts.dropLast(1)) {
-            node = node.findFile(part) ?: node.createDirectory(part) ?: return null
-        }
-        node.findFile(parts.last())?.delete()
-        val file = node.createFile("text/plain", parts.last()) ?: return null
-        context.contentResolver.openOutputStream(file.uri, "wt")?.bufferedWriter(Charsets.UTF_8)?.use {
-            it.write(content)
-            it.flush()
-        } ?: return null
-        val base = destinationPath(context)?.trimEnd('/') ?: return null
-        "$base/${parts.joinToString("/")}"
-    }.getOrNull()
-
-    /** Best-effort removal of an app-created temporary file inside the selected folder. */
-    fun deleteTemporaryFile(context: Context, absolutePath: String) {
-        runCatching {
-            val base = destinationPath(context)?.trimEnd('/') ?: return
-            if (!absolutePath.startsWith("$base/")) return
-            val parts = absolutePath.removePrefix("$base/").split('/').filter { it.isNotBlank() }
-            if (parts.isEmpty() || parts.any { it == "." || it == ".." }) return
-            var node = treeRoot(context) ?: return
-            for (part in parts.dropLast(1)) node = node.findFile(part) ?: return
-            node.findFile(parts.last())?.delete()
-        }
-    }
-
     fun findDownloadedDocument(context: Context, outputPath: String): DocumentFile? = runCatching {
         val base = destinationPath(context)?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
         val cleanPath = outputPath.trim()
