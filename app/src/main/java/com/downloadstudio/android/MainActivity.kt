@@ -699,7 +699,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
             }
         }
         item {
-            SettingsCard("AUTHENTICATED MEDIA SESSIONS", "Sign in through Download Studio's in-app browser. Saved session cookies are encrypted with Android Keystore and used only for matching Facebook or Instagram downloads.") {
+            SettingsCard("AUTHENTICATED MEDIA SESSIONS", "Sign in inside Download Studio. Login cookies remain in Android's app-private WebView storage and are never exported to Termux. Downloads pass only the selected media's short-lived CDN URL to the downloader.") {
                 StatusLine("Facebook browser session", facebookConnected, if (facebookConnected) "Saved securely" else "Not connected")
                 OutlinedButton(
                     onClick = { sessionLauncher.launch(BrowserSessionActivity.intent(context, BrowserSessionStore.Platform.FACEBOOK)) },
