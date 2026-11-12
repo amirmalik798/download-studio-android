@@ -33,7 +33,7 @@ def main() -> int:
     require("coil-compose" in app_build and "AsyncImage" in main_activity, "Coil thumbnail support missing")
     require("youtubeThumbnailUrl" in main_activity and "resolvePageMetadata" in main_activity and "og:image" in main_activity and "twitter:image" in main_activity and "VideoThumbnailPreview(url)" in main_activity and "height(190.dp)" in main_activity and "jsoup" in app_build and '"VIDEO"' in main_activity and '"AUDIO"' in main_activity, "Multi-site pasted URL thumbnail preview/type labels missing")
     require("previewMetadataScript" in termux and "--skip-download --dump-single-json" in termux and "DS_THUMBNAIL:" in termux and "DS_DONE" in termux, "Metadata-only yt-dlp preview fallback missing")
-    require("resolveDownloaderPreview" in main_activity and "isPublicHttpsUrl" in main_activity and "No cookies" not in termux, "Safe public thumbnail extraction path missing")
+    require("resolveDownloaderPreview" in main_activity and "isPublicHttpsUrl" in main_activity and "--cookies" not in termux, "Safe public thumbnail extraction path missing")
     require("ContentPaste" in main_activity and "default_mode" in main_activity and "Added to Downloads" in main_activity, "Quick Download paste/remembered-mode feedback missing")
     require("DownloadCoordinator.retry(item.id)" in main_activity and "fun retry(id: String)" in coordinator, "Retry failed download action missing")
     require("deleteState" in main_activity and "fun deleteState" in storage, "Temporary preview state cleanup missing")
