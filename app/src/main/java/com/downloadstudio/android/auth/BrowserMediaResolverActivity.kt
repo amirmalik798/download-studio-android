@@ -152,8 +152,8 @@ class BrowserMediaResolverActivity : Activity() {
             if (isAllowedMediaUrl(Uri.parse(mediaUrl))) {
                 completeResolution(
                     mediaUrl,
-                    payload?.optString("title").take(160).ifBlank { "Social media video" },
-                    payload?.optString("thumbnail")
+                    payload?.optString("title").orEmpty().take(160).ifBlank { "Social media video" },
+                    payload?.optString("thumbnail").orEmpty()
                 )
             } else {
                 status.text = when {
