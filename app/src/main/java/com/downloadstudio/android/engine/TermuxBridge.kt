@@ -51,6 +51,25 @@ object TermuxBridge {
             "printf 'ffmpeg: '; ffmpeg -version 2>&1 | head -n 1 || true; } > ${shellQuote(report)}"
     }
 
+    /**
+     * Resolve preview metadata without downloading media. Output is written to a unique,
+     * app-selected state file and read back through SAF; no shared-storage access is added.
+     */
+    fun thumbnailLookupScript(id: String, url: String, destination: String): String {
+        require(id.matches(Regex("[A-Za-z0-9_-]{1,40}"))) { "Invalid preview request ID." }
+        val q = ::shellQuote
+        val stateDir = "${destination.trimEnd('/')}/DownloadStudioState"
+        val result = "$stateDir/preview-$id.txt"
+        return "mkdir -p " + q(stateDir) + "; rm -f " + q(result) + "; " +
+            "yt-dlp --ignore-config --no-warnings --no-playlist --skip-download " +
+            "--socket-timeout 8 --retries 0 --fragment-retries 0 --extractor-retries 0 " +
+            "--print " + q("DS_PREVIEW_THUMB:%(thumbnail)s") + " " +
+            "--print " + q("DS_PREVIEW_TITLE:%(title)s") + " " +
+            "--print " + q("DS_PREVIEW_DURATION:%(duration_string)s") + " " +
+            q(url) + " > " + q(result) + " 2>&1; " +
+            "printf '\\nDS_PREVIEW_DONE\\n' >> " + q(result)
+    }
+
     fun downloadScript(id: String, url: String, mode: String, destination: String): String {
         val q = ::shellQuote
         val stateDir = "$destination/DownloadStudioState"
