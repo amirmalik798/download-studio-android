@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
-import com.downloadstudio.android.auth.BrowserSessionStore
 import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
@@ -240,7 +239,6 @@ object DownloadCoordinator {
 
     private suspend fun runJob(original: DownloadItem) {
         val id = original.id
-        var cookieTransferPath: String? = null
         try {
             val destination = StorageAccess.destinationPath(appContext)
             if (destination.isNullOrBlank()) {
@@ -263,17 +261,7 @@ object DownloadCoordinator {
             // Clear that marker only after the thermal gate allows a real retry.
             thermalDeferred.remove(id)
             update(id) { it.copy(status = DownloadStatus.STARTING, progress = 0f, speed = "Starting…", eta = "—", error = "") }
-            val cookieJar = BrowserSessionStore.cookieJarForUrl(appContext, original.url)
-            if (!cookieJar.isNullOrBlank()) {
-                val transferName = "DownloadStudioState/.ds-session-$id-${UUID.randomUUID()}.txt"
-                cookieTransferPath = StorageAccess.writeTemporaryText(appContext, transferName, cookieJar)
-                    ?: throw IllegalStateException("Could not prepare the temporary browser session transfer. Check download-folder access.")
-            }
-            val script = if (cookieTransferPath != null) {
-                TermuxBridge.authenticatedDownloadScript(id, original.url, original.mode.name, destination, cookieTransferPath!!)
-            } else {
-                TermuxBridge.downloadScript(id, original.url, original.mode.name, destination)
-            }
+            val script = TermuxBridge.downloadScript(id, original.url, original.mode.name, destination)
             val launch = TermuxBridge.runShell(appContext, script, "Download Studio · ${original.mode.name.lowercase()}", true)
             if (launch.isFailure) throw launch.exceptionOrNull() ?: IllegalStateException("Termux could not start the download.")
             update(id) { current ->
@@ -351,7 +339,6 @@ object DownloadCoordinator {
         } catch (e: Exception) {
             if (id !in cancelled && id !in thermalDeferred) update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", error = e.message ?: "Download failed") }
         } finally {
-            cookieTransferPath?.let { StorageAccess.deleteTemporaryFile(appContext, it) }
             active.remove(id)
             cancelled.remove(id)
             persist()
