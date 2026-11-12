@@ -1237,6 +1237,15 @@ private fun VideoThumbnailPreview(rawUrl: String) {
                     color = TextMuted,
                     fontSize = 11.sp
                 )
+                if (metadata.title.isNotBlank()) {
+                    Text(
+                        metadata.title,
+                        color = TextMain,
+                        fontSize = 10.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         } else {
             Column(
