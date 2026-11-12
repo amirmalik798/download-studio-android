@@ -44,8 +44,13 @@ import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.engine.DownloadCoordinator
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import org.jsoup.Jsoup
+import java.net.InetAddress
+import java.net.URI
 import java.util.Locale
 
 private val Ink = Color(0xFF090E19)
@@ -808,11 +813,106 @@ private fun youtubeThumbnailUrl(rawUrl: String): String? = youtubeVideoId(rawUrl
     "https://i.ytimg.com/vi/$it/hqdefault.jpg"
 }
 
+private fun isPublicHttpsUrl(rawUrl: String): Boolean = runCatching {
+    val uri = URI(rawUrl)
+    val host = uri.host?.lowercase(Locale.ROOT)?.trimEnd('.') ?: return false
+    if (uri.scheme?.lowercase(Locale.ROOT) != "https" || uri.userInfo != null ||
+        host == "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false
+    val addresses = InetAddress.getAllByName(host)
+    addresses.isNotEmpty() && addresses.all { address ->
+        val bytes = address.address
+        val privateIpv6 = bytes.size == 16 &&
+            ((bytes[0].toInt() and 0xFE) == 0xFC ||
+                ((bytes[0].toInt() and 0xFF) == 0xFE && (bytes[1].toInt() and 0xC0) == 0x80))
+        val privateIpv4 = bytes.size == 4 && (
+            (bytes[0].toInt() and 0xFF) == 10 ||
+                (bytes[0].toInt() and 0xFF) == 127 ||
+                (bytes[0].toInt() and 0xFF) == 0 ||
+                ((bytes[0].toInt() and 0xFF) == 169 && (bytes[1].toInt() and 0xFF) == 254) ||
+                ((bytes[0].toInt() and 0xFF) == 172 && (bytes[1].toInt() and 0xF0) == 16) ||
+                ((bytes[0].toInt() and 0xFF) == 192 && (bytes[1].toInt() and 0xFF) == 168)
+        )
+        !address.isAnyLocalAddress && !address.isLoopbackAddress &&
+            !address.isLinkLocalAddress && !address.isSiteLocalAddress &&
+            !address.isMulticastAddress && !privateIpv4 && !privateIpv6
+    }
+}.getOrDefault(false)
+
+private fun resolvePageThumbnail(rawUrl: String): String? = runCatching {
+    var currentUrl = rawUrl
+    repeat(5) {
+        if (!isPublicHttpsUrl(currentUrl)) return null
+        val response = Jsoup.connect(currentUrl)
+            .userAgent("Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36")
+            .timeout(8_000)
+            .maxBodySize(1_000_000)
+            .followRedirects(false)
+            .ignoreHttpErrors(true)
+            .execute()
+        if (response.statusCode() in 300..399) {
+            val location = response.header("location") ?: return null
+            currentUrl = URI(currentUrl).resolve(location).toString()
+        } else {
+            if (response.statusCode() !in 200..299) return null
+            val document = response.parse()
+            val candidates = listOf(
+                document.selectFirst("meta[property=og:image]")?.attr("content"),
+                document.selectFirst("meta[property=og:image:secure_url]")?.attr("content"),
+                document.selectFirst("meta[name=twitter:image]")?.attr("content"),
+                document.selectFirst("meta[name=twitter:image:src]")?.attr("content"),
+                document.selectFirst("meta[itemprop=image]")?.attr("content"),
+                document.selectFirst("link[rel=image_src]")?.attr("href"),
+                document.selectFirst("video[poster]")?.attr("poster")
+            )
+            for (candidate in candidates) {
+                if (candidate.isNullOrBlank()) continue
+                val resolved = URI(currentUrl).resolve(candidate.trim()).toString()
+                if (isPublicHttpsUrl(resolved)) return resolved
+            }
+            return null
+        }
+    }
+    null
+}.getOrNull()
+
 @Composable
 private fun VideoThumbnailPreview(rawUrl: String) {
-    val thumbnailUrl = remember(rawUrl) { youtubeThumbnailUrl(rawUrl.trim()) } ?: return
-    var loaded by remember(thumbnailUrl) { mutableStateOf(false) }
-    var failed by remember(thumbnailUrl) { mutableStateOf(false) }
+    val cleanUrl = rawUrl.trim()
+    if (!cleanUrl.startsWith("https://", ignoreCase = true) &&
+        !cleanUrl.startsWith("http://", ignoreCase = true)) return
+
+    var thumbnailUrl by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var lookupFailed by remember { mutableStateOf(false) }
+    var imageLoaded by remember { mutableStateOf(false) }
+    var imageFailed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(cleanUrl) {
+        thumbnailUrl = null
+        loading = false
+        lookupFailed = false
+        imageLoaded = false
+        imageFailed = false
+        if (cleanUrl.isBlank()) return@LaunchedEffect
+
+        val youtubeThumbnail = youtubeThumbnailUrl(cleanUrl)
+        if (youtubeThumbnail != null) {
+            thumbnailUrl = youtubeThumbnail
+            return@LaunchedEffect
+        }
+
+        if (!cleanUrl.startsWith("https://", ignoreCase = true)) {
+            lookupFailed = true
+            return@LaunchedEffect
+        }
+
+        delay(450)
+        loading = true
+        val resolved = withContext(Dispatchers.IO) { resolvePageThumbnail(cleanUrl) }
+        thumbnailUrl = resolved
+        lookupFailed = resolved == null
+        loading = false
+    }
 
     Box(
         modifier = Modifier
@@ -822,24 +922,38 @@ private fun VideoThumbnailPreview(rawUrl: String) {
             .background(Color(0xFF0C1525)),
         contentAlignment = Alignment.Center
     ) {
-        if (!loaded) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Default.VideoLibrary, contentDescription = null, tint = Cyan, modifier = Modifier.size(30.dp))
+        if (thumbnailUrl == null || !imageLoaded || imageFailed) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    Icons.Default.VideoLibrary,
+                    contentDescription = null,
+                    tint = Cyan,
+                    modifier = Modifier.size(30.dp)
+                )
                 Text(
-                    if (failed) "Thumbnail unavailable" else "Loading video preview…",
+                    when {
+                        loading -> "Finding video thumbnail…"
+                        lookupFailed || imageFailed -> "No preview image found for this link"
+                        else -> "Preparing video preview…"
+                    },
                     color = TextMuted,
                     fontSize = 11.sp
                 )
             }
         }
-        AsyncImage(
-            model = thumbnailUrl,
-            contentDescription = "Video thumbnail preview",
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop,
-            onSuccess = { loaded = true },
-            onError = { failed = true }
-        )
+        thumbnailUrl?.let { image ->
+            AsyncImage(
+                model = image,
+                contentDescription = "Video thumbnail preview",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                onSuccess = { imageLoaded = true },
+                onError = { imageFailed = true }
+            )
+        }
     }
 }
 
