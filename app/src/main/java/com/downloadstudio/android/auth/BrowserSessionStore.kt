@@ -3,6 +3,7 @@ package com.downloadstudio.android.auth
 import android.content.Context
 import android.webkit.CookieManager
 import android.webkit.WebStorage
+import java.security.KeyStore
 
 /**
  * The authenticated browser session stays in Android WebView's app-private cookie store.
@@ -29,6 +30,19 @@ object BrowserSessionStore {
     private fun requiredCookies(platform: Platform): Set<String> = when (platform) {
         Platform.FACEBOOK -> setOf("c_user", "xs")
         Platform.INSTAGRAM -> setOf("sessionid")
+    }
+
+    /**
+     * Removes encrypted cookie-jar duplicates written by an earlier draft build.
+     * The WebView cookie store is intentionally left untouched, so an existing login remains.
+     */
+    fun purgeLegacyCookieCopies(context: Context) {
+        runCatching {
+            context.getSharedPreferences("browser_media_sessions", Context.MODE_PRIVATE)
+                .edit().clear().commit()
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+                .deleteEntry("download_studio_browser_sessions_v1")
+        }
     }
 
     /** Checks that the user is signed in. Cookie values are never returned to callers. */
