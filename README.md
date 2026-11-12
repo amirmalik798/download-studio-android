@@ -39,7 +39,7 @@ Paste a URL or use the Paste button. Download Studio first asks yt-dlp for media
 
 Preview lookups are time-limited, run off the UI thread, and only accept public HTTPS source/image hosts. They pass no account cookies or browser sessions to Termux. A preview is not guaranteed for login-protected pages, challenge pages, JavaScript-only pages, or unsupported extractors. When a thumbnail is unavailable, the preview shows a clear fallback instead of a broken image.
 
-The two download choices remain intentionally simple: **Best available video + audio** or **Best available audio** (saved as MP3). Video mode asks yt-dlp for its best separate video and audio streams, falling back to the best combined format when separate streams are unavailable. Audio mode selects yt-dlp's best available audio source and converts it to MP3 using the highest MP3 quality setting. The last choice is remembered. No manual resolution or bitrate menu is provided.
+The two download choices remain intentionally simple: **Best available video + audio** or **Best available audio** (saved as MP3). Video mode asks yt-dlp for its best separate video and audio streams, falling back to the best combined format when separate streams are unavailable. Audio mode selects yt-dlp's best audio-only source, falling back to the best combined format when a separate audio stream is unavailable, then converts it to MP3 using the highest MP3 quality setting. The last choice is remembered. No manual resolution or bitrate menu is provided.
 
 ## YouTube sharing
 
