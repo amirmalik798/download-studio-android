@@ -10,6 +10,7 @@ object QueueStore {
     private const val KEY_TREE_URI = "destination_tree_uri"
     private const val KEY_BASE_PATH = "destination_base_path"
     private const val KEY_MAX = "max_concurrent"
+    private const val KEY_DEFAULT_MODE = "default_download_mode"
 
     fun load(context: Context): List<DownloadItem> = runCatching {
         val raw = prefs(context).getString(KEY_QUEUE, "[]") ?: "[]"
@@ -53,6 +54,13 @@ object QueueStore {
     fun treeUri(context: Context): String? = prefs(context).getString(KEY_TREE_URI, null)
     fun basePath(context: Context): String? = prefs(context).getString(KEY_BASE_PATH, null)
     fun setTree(context: Context, uri: String, basePath: String) = prefs(context).edit().putString(KEY_TREE_URI, uri).putString(KEY_BASE_PATH, basePath).apply()
+    fun defaultMode(context: Context): DownloadMode =
+        runCatching { DownloadMode.valueOf(prefs(context).getString(KEY_DEFAULT_MODE, DownloadMode.VIDEO.name) ?: DownloadMode.VIDEO.name) }
+            .getOrDefault(DownloadMode.VIDEO)
+
+    fun setDefaultMode(context: Context, mode: DownloadMode) =
+        prefs(context).edit().putString(KEY_DEFAULT_MODE, mode.name).apply()
+
     fun maxConcurrent(context: Context): Int {
         val stored = prefs(context).getInt(KEY_MAX, 1)
         return if (stored in 1..2) stored else 1
