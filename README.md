@@ -29,17 +29,19 @@ Completed rows open through Android's default compatible app for the file MIME t
 
 ## Authenticated Facebook and Instagram sessions
 
-Download Studio can optionally use a session that the user signs into and saves inside the app's private in-app browser:
+Download Studio uses an app-private Android WebView for Facebook and Instagram sign-in:
 
 1. Open Settings → Authenticated Media Sessions.
 2. Choose Connect Facebook or Connect Instagram.
-3. Sign in on the platform's own HTTPS login page inside Download Studio.
-4. Tap **Save session**. The app checks for the expected signed-in session cookies before accepting it.
-5. A download from the matching platform automatically uses that saved session when yt-dlp supports the URL.
+3. Sign in on the platform's HTTPS page inside Download Studio.
+4. Tap **Save session** to verify the signed-in state. WebView already persists its own cookies inside Download Studio's private app storage.
+5. Reuse that session for later links until the platform expires it, the user disconnects it, or app data is cleared.
 
-Session cookie jars are encrypted with AES-GCM using an Android Keystore key. They are not written into the download queue or logs. For an authenticated download, Download Studio creates a short-lived transfer file in the user-selected SAF folder; the Termux command moves it into Termux-private storage with mode 600, deletes the shared copy, passes it to yt-dlp with `--cookies`, and removes the private copy when the command exits. Download Studio also attempts to remove the temporary transfer file if the command cannot start. Disconnecting a platform removes its encrypted saved session and clears that platform's cookies from the in-app WebView.
+**Important security boundary:** account cookies are never exported to Termux, yt-dlp, shared storage, queue records, or download logs. For a Facebook/Instagram link, Download Studio opens the source in its private WebView and attempts to resolve a media-specific URL from the page's video element or media metadata. Only a URL on an approved Meta media CDN is passed to the existing Termux download engine. That URL may contain a time-limited signature for the selected media; it is not an account login cookie and does not grant general account access. Termux can download that media URL, but it does not receive the Facebook/Instagram session.
 
-**Browser-session scope and limitations:** these are sessions created inside Download Studio's WebView. Android does not let Download Studio read the private session databases of the separately installed Facebook or Instagram apps. Meta may restrict sign-in inside embedded browsers or challenge the login; if that happens, authenticated extraction may not be available. A signed-in session does not guarantee access to every story, private post, region-restricted item, or unsupported extractor. Download Studio does not bypass DRM, access controls, or private-content restrictions.
+The resolver is intentionally conservative. Some pages use blob-backed, encrypted, DRM-protected, segmented, or otherwise unsupported playback streams; those cannot be resolved by this flow. Meta may restrict embedded-browser login or challenge sign-ins. Download Studio does not read the separately installed social apps' private storage and does not bypass DRM, access controls, or private-content restrictions.
+
+Disconnecting a platform removes that platform's WebView cookies and origin storage. A session generally requires signing in once per platform, not before every download; sign in again only after expiration, revocation, or a platform security challenge.
 
 ## YouTube sharing
 
