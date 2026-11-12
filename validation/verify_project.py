@@ -68,6 +68,11 @@ def main() -> int:
             "org.openintents.extra.ABSOLUTE_PATH" in main_activity and
             "Intent.createChooser(directoryIntent" in main_activity,
             "Folder open handoff or file-manager chooser missing")
+    require("Your media," not in main_activity and "Paste a link, check the preview, and download." not in main_activity,
+            "Promotional homepage heading/subtitle should be removed")
+    require("withContext(NonCancellable + Dispatchers.IO)" in main_activity and
+            "StorageAccess.deleteState(context, statePath)" in main_activity,
+            "Preview temp-file cleanup is not cancellation-safe")
     require("containerColor = Panel2" in main_activity and
             "BorderStroke(1.dp, Line)" in main_activity and
             'Text("Copy source link", color = TextMain' in main_activity,

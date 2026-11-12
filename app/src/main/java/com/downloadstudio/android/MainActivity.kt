@@ -45,6 +45,7 @@ import com.downloadstudio.android.engine.DownloadCoordinator
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -255,12 +256,6 @@ private fun HomeScreen(
     val active = items.count { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }
     val completed = items.count { it.status == DownloadStatus.COMPLETED }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Your media,\nbeautifully managed.", color = TextMain, fontSize = 28.sp, lineHeight = 33.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Paste a link, check the preview, and download.", color = TextMuted, fontSize = 13.sp)
-            }
-        }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1132,25 +1127,29 @@ private suspend fun resolveDownloaderPreview(
     val requestId = java.util.UUID.randomUUID().toString().replace("-", "")
     val statePath = "DownloadStudioState/preview-$requestId.txt"
     val script = TermuxBridge.previewMetadataScript(requestId, rawUrl, destination)
-    val launch = withContext(Dispatchers.IO) {
-        TermuxBridge.runShell(context, script, "Download Studio · preview lookup", true)
-    }
-    if (launch.isFailure) return PreviewMetadata()
+    try {
+        val launch = withContext(Dispatchers.IO) {
+            TermuxBridge.runShell(context, script, "Download Studio · preview lookup", true)
+        }
+        if (launch.isFailure) return PreviewMetadata()
 
-    repeat(62) {
-        delay(400)
-        val state = withContext(Dispatchers.IO) { StorageAccess.readState(context, statePath) }
-        if (!state.isNullOrBlank() && state.contains("DS_DONE")) {
-            withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
-            val parsed = parsePreviewResult(state)
-            val safeThumbnail = if (parsed.thumbnailUrl.isBlank()) "" else withContext(Dispatchers.IO) {
-                parsed.thumbnailUrl.takeIf { isPublicHttpsUrl(it) }.orEmpty()
+        repeat(62) {
+            delay(400)
+            val state = withContext(Dispatchers.IO) { StorageAccess.readState(context, statePath) }
+            if (!state.isNullOrBlank() && state.contains("DS_DONE")) {
+                val parsed = parsePreviewResult(state)
+                val safeThumbnail = if (parsed.thumbnailUrl.isBlank()) "" else withContext(Dispatchers.IO) {
+                    parsed.thumbnailUrl.takeIf { isPublicHttpsUrl(it) }.orEmpty()
+                }
+                return parsed.copy(thumbnailUrl = safeThumbnail)
             }
-            return parsed.copy(thumbnailUrl = safeThumbnail)
+        }
+        return PreviewMetadata()
+    } finally {
+        withContext(NonCancellable + Dispatchers.IO) {
+            StorageAccess.deleteState(context, statePath)
         }
     }
-    withContext(Dispatchers.IO) { StorageAccess.deleteState(context, statePath) }
-    return PreviewMetadata()
 }
 
 private fun resolvePageMetadata(rawUrl: String): PreviewMetadata = runCatching {
