@@ -713,7 +713,7 @@ private fun openDownloadedFolder(context: android.content.Context, item: Downloa
 
     val preferences = context.getSharedPreferences("download_studio_ui", android.content.Context.MODE_PRIVATE)
     val savedComponent = preferences.getString(FOLDER_MANAGER_PREFERENCE, null)
-        ?.let(ComponentName::unflattenFromString)
+        ?.let { ComponentName.unflattenFromString(it) }
     if (savedComponent != null) {
         val savedTarget = orderedTargets.firstOrNull { it.component == savedComponent }
         if (savedTarget != null && startFolderTarget(context, savedTarget)) return
