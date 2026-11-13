@@ -1,4 +1,4 @@
-# Download Studio for Android — 0.1.9
+# Download Studio for Android — 0.1.10
 
 A native Android media-downloader interface. Download Studio receives media URLs through Android's Share sheet and delegates extraction, downloading and processing to yt-dlp and FFmpeg running locally in Termux.
 
@@ -41,7 +41,7 @@ Preview lookups are time-limited, run off the UI thread, and only accept public 
 
 The two download choices remain intentionally simple: **Best available video + audio** or **Best available audio** (saved as MP3). Video mode uses yt-dlp's recommended `bestvideo*+bestaudio/best` selector: it chooses the best format containing video, adds the best audio-only stream when available, and falls back to the best combined audio/video format. Audio mode selects yt-dlp's best audio-only format, falling back to the best combined format when a separate audio stream is unavailable, then converts it to MP3 with `--audio-quality 0` (the highest MP3 encoder-quality setting). MP3 is lossy, so the original stream's quality remains the upper limit. Actual formats depend on what each site's extractor exposes to the installed yt-dlp version. No site-specific resolution/codec restrictions or manual resolution/bitrate menu are used. The last choice is remembered.
 
-For **View in folder**, Download Studio lists Samsung My Files, File Manager+ and other installed managers that can open the selected folder. Choose **Just once** to use an app for this opening only, or **Always** to remember it and open future folders directly with that app. If the remembered app is uninstalled or cannot be launched, the app clears the saved choice and asks again. The selected folder URI, read permission and absolute-path hints are passed to the manager; the Android document picker remains the final fallback.
+For **View in folder**, a themed manager picker lists Samsung My Files, File Manager+ and other compatible installed managers with visible selectable rows. **Just once** opens the configured Downloads folder for this opening only; **Always** remembers the manager for later folder openings. Before handing off, Download Studio verifies that the completed file is still inside the currently configured Downloads path. The selected folder URI, read permission and absolute-path hints are passed to the manager; the Android document picker remains the final fallback.
 
 ## YouTube sharing
 

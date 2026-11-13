@@ -1,6 +1,5 @@
 package com.downloadstudio.android
 
-import android.app.AlertDialog as PlatformAlertDialog
 import android.content.ClipData
 import android.content.ComponentName
 import android.content.pm.PackageManager
@@ -16,12 +15,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items as lazyItems
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -221,6 +223,24 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
 
     selected?.let { item ->
         DownloadDetailsDialog(item, onDismiss = { selected = null })
+    }
+
+    pendingFolderManagerTargets?.let { targets ->
+        FolderManagerChoiceDialog(
+            targets = targets,
+            onDismiss = { pendingFolderManagerTargets = null },
+            onChoice = { target, rememberChoice ->
+                pendingFolderManagerTargets = null
+                if (rememberChoice) {
+                    uiPreferences.edit()
+                        .putString(FOLDER_MANAGER_PREFERENCE, target.component.flattenToString())
+                        .apply()
+                }
+                if (!startFolderTarget(context, target) && rememberChoice) {
+                    uiPreferences.edit().remove(FOLDER_MANAGER_PREFERENCE).apply()
+                }
+            }
+        )
     }
 
 }
@@ -641,8 +661,15 @@ private fun openDownloadedFolder(context: android.content.Context, item: Downloa
         return
     }
 
-    val absolutePath = item.outputPath.substringBeforeLast('/', "").ifBlank {
-        QueueStore.basePath(context).orEmpty()
+    val configuredDownloadsPath = StorageAccess.destinationPath(context)?.trimEnd('/')
+    val absolutePath = item.outputPath.substringBeforeLast('/', "").trimEnd('/')
+    if (configuredDownloadsPath.isNullOrBlank() || absolutePath != configuredDownloadsPath) {
+        Toast.makeText(
+            context,
+            "This download is not inside your currently configured Downloads folder.",
+            Toast.LENGTH_LONG
+        ).show()
+        return
     }
     val folderLabel = folder.name ?: "Download folder"
     val directoryIntent = Intent(Intent.ACTION_VIEW).apply {
@@ -722,7 +749,7 @@ private fun openDownloadedFolder(context: android.content.Context, item: Downloa
     }
 
     if (orderedTargets.isNotEmpty()) {
-        showFolderTargetChoice(context, orderedTargets)
+        pendingFolderManagerTargets = orderedTargets
         return
     }
 
@@ -737,31 +764,118 @@ private fun openDownloadedFolder(context: android.content.Context, item: Downloa
     }
 }
 
-private fun showFolderTargetChoice(context: android.content.Context, targets: List<FolderOpenTarget>) {
-    var selectedIndex = 0
-    val labels = targets.map { it.label }.toTypedArray()
-    PlatformAlertDialog.Builder(context)
-        .setTitle("Open folder with")
-        .setMessage("Choose a file manager and decide whether to remember your choice.")
-        .setSingleChoiceItems(labels, selectedIndex) { _, which ->
-            selectedIndex = which
-        }
-        .setPositiveButton("Just once") { _, _ ->
-            startFolderTarget(context, targets[selectedIndex])
-        }
-        .setNeutralButton("Always") { _, _ ->
-            val target = targets[selectedIndex]
-            context.getSharedPreferences("download_studio_ui", android.content.Context.MODE_PRIVATE)
-                .edit()
-                .putString(FOLDER_MANAGER_PREFERENCE, target.component.flattenToString())
-                .apply()
-            if (!startFolderTarget(context, target)) {
-                context.getSharedPreferences("download_studio_ui", android.content.Context.MODE_PRIVATE)
-                    .edit().remove(FOLDER_MANAGER_PREFERENCE).apply()
+private var pendingFolderManagerTargets by mutableStateOf<List<FolderOpenTarget>?>(null)
+
+@Composable
+private fun FolderManagerChoiceDialog(
+    targets: List<FolderOpenTarget>,
+    onDismiss: () -> Unit,
+    onChoice: (FolderOpenTarget, Boolean) -> Unit
+) {
+    var selectedIndex by remember(targets) { mutableStateOf(0) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "Open folder with",
+                color = TextMain,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Choose a file manager for your configured Downloads folder.",
+                    color = TextMuted,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    targets.forEachIndexed { index, target ->
+                        val selected = selectedIndex == index
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (selected) Blue.copy(alpha = 0.14f) else Panel2)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (selected) Blue else Line,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .clickable { selectedIndex = index }
+                                .padding(horizontal = 10.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RadioButton(
+                                selected = selected,
+                                onClick = { selectedIndex = index },
+                                colors = RadioButtonDefaults.colors(
+                                    selectedColor = Cyan,
+                                    unselectedColor = TextMuted
+                                )
+                            )
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    target.label,
+                                    color = TextMain,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    target.component.packageName,
+                                    color = TextMuted,
+                                    fontSize = 9.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
             }
-        }
-        .setNegativeButton("Cancel", null)
-        .show()
+        },
+        confirmButton = {
+            Button(
+                onClick = { onChoice(targets[selectedIndex], true) },
+                colors = ButtonDefaults.buttonColors(containerColor = Blue),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Text("Always", color = Color.White, fontSize = 12.sp)
+            }
+        },
+        dismissButton = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel", color = TextMuted, fontSize = 11.sp)
+                }
+                TextButton(onClick = { onChoice(targets[selectedIndex], false) }) {
+                    Text("Just once", color = Cyan, fontSize = 11.sp)
+                }
+            }
+        },
+        shape = RoundedCornerShape(20.dp),
+        containerColor = Panel,
+        titleContentColor = TextMain,
+        textContentColor = TextMuted,
+        tonalElevation = 0.dp
+    )
 }
 
 private fun startFolderTarget(context: android.content.Context, target: FolderOpenTarget): Boolean =
