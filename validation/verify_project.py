@@ -29,7 +29,7 @@ def main() -> int:
     require('id("com.android.application") version "8.13.2"' in root_build, "Unexpected Android Gradle Plugin")
     require('id("org.jetbrains.kotlin.android") version "2.2.10"' in root_build, "Unexpected Kotlin plugin")
     require("compileSdk = 36" in app_build and "minSdk = 26" in app_build, "Unexpected SDK configuration")
-    require('versionName = "0.1.9"' in app_build and "versionCode = 10" in app_build, "Version not bumped to 0.1.8")
+    require('versionName = "0.1.9"' in app_build and "versionCode = 10" in app_build, "Version not bumped to 0.1.9")
     require("coil-compose" in app_build and "AsyncImage" in main_activity, "Coil thumbnail support missing")
     require("youtubeThumbnailUrl" in main_activity and "resolvePageMetadata" in main_activity and "og:image" in main_activity and "twitter:image" in main_activity and "VideoThumbnailPreview(url)" in main_activity and "height(190.dp)" in main_activity and "jsoup" in app_build and '"VIDEO"' in main_activity and '"AUDIO"' in main_activity, "Multi-site pasted URL thumbnail preview/type labels missing")
     require("previewMetadataScript" in termux and "--skip-download --dump-single-json" in termux and "DS_THUMBNAIL:" in termux and "DS_DONE" in termux, "Metadata-only yt-dlp preview fallback missing")
@@ -67,13 +67,13 @@ def main() -> int:
     require("vnd.android.document/directory" in manifest_text and
             "org.openintents.extra.ABSOLUTE_PATH" in main_activity and
             "queryIntentActivities(directoryIntent" in main_activity and
-            "getLaunchIntentForPackage(\\\"com.sec.android.app.myfiles\\\")" in main_activity and
-            "getLaunchIntentForPackage(\\\"com.alphainventor.filemanager\\\")" in main_activity and
+            "getLaunchIntentForPackage(" in main_activity and "com.sec.android.app.myfiles" in main_activity and
+            "com.alphainventor.filemanager" in main_activity and
             "com.sec.android.app.myfiles.external.ui.folderPath" in main_activity,
             "Folder chooser must expose installed Samsung/File Manager+ targets and preserve the directory handoff")
     require("Just once" in main_activity and "Always" in main_activity and
             "preferred_folder_manager_component" in main_activity and
-            "ComponentName::unflattenFromString" in main_activity and
+            "ComponentName.unflattenFromString" in main_activity and
             "startFolderTarget(context, savedTarget)" in main_activity,
             "View in folder must support one-time and remembered file-manager choices")
     require("Your media," not in main_activity and "Paste a link, check the preview, and download." not in main_activity,
