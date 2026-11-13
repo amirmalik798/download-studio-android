@@ -73,7 +73,7 @@ def main() -> int:
             "Folder chooser must expose installed Samsung/File Manager+ targets and preserve the directory handoff")
     require("Just once" in main_activity and "Always" in main_activity and
             "preferred_folder_manager_component" in main_activity and
-            "ComponentName.unflattenFromString" in main_activity and
+            "ComponentName.unflattenFromString(it)" in main_activity and
             "startFolderTarget(context, savedTarget)" in main_activity,
             "View in folder must support one-time and remembered file-manager choices")
     require("Your media," not in main_activity and "Paste a link, check the preview, and download." not in main_activity,
