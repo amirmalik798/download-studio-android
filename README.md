@@ -1,4 +1,4 @@
-# Download Studio for Android — 0.1.7
+# Download Studio for Android — 0.1.8
 
 A native Android media-downloader interface. Download Studio receives media URLs through Android's Share sheet and delegates extraction, downloading and processing to yt-dlp and FFmpeg running locally in Termux.
 
@@ -41,7 +41,7 @@ Preview lookups are time-limited, run off the UI thread, and only accept public 
 
 The two download choices remain intentionally simple: **Best available video + audio** or **Best available audio** (saved as MP3). Video mode uses yt-dlp's recommended `bestvideo*+bestaudio/best` selector: it chooses the best format containing video, adds the best audio-only stream when available, and falls back to the best combined audio/video format. Audio mode selects yt-dlp's best audio-only format, falling back to the best combined format when a separate audio stream is unavailable, then converts it to MP3 with `--audio-quality 0` (the highest MP3 encoder-quality setting). MP3 is lossy, so the original stream's quality remains the upper limit. Actual formats depend on what each site's extractor exposes to the installed yt-dlp version. No site-specific resolution/codec restrictions or manual resolution/bitrate menu are used. The last choice is remembered.
 
-For **View in folder**, Download Studio sends a standard Android directory-view intent with the selected folder URI, read permission and absolute-path hint. It first tries Samsung My Files and File Manager+ when their apps declare support, otherwise shows a chooser for compatible file managers. If no file manager handles the directory intent, the Android document picker opens at the folder location.
+For **View in folder**, Download Studio sends a standard Android directory-view intent with the selected folder URI, read permission and absolute-path hint. Samsung My Files and File Manager+ are also added as explicit chooser targets when installed, even if they do not advertise the generic directory MIME intent. The app passes the selected storage path and URI as best-effort navigation hints; whether a third-party file manager opens directly at that folder depends on that app/version accepting the handoff. Other compatible file managers remain available in the chooser. If no file manager is available, the Android document picker opens at the selected folder location.
 
 ## YouTube sharing
 
