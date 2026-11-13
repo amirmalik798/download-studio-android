@@ -1,6 +1,9 @@
 package com.downloadstudio.android
 
+import android.app.AlertDialog as PlatformAlertDialog
 import android.content.ClipData
+import android.content.ComponentName
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -623,6 +626,14 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
     }
 }
 
+private data class FolderOpenTarget(
+    val label: String,
+    val component: ComponentName,
+    val intent: Intent
+)
+
+private const val FOLDER_MANAGER_PREFERENCE = "preferred_folder_manager_component"
+
 private fun openDownloadedFolder(context: android.content.Context, item: DownloadItem) {
     val folder = StorageAccess.findDownloadedFolder(context, item.outputPath)
     if (folder == null) {
@@ -642,63 +653,76 @@ private fun openDownloadedFolder(context: android.content.Context, item: Downloa
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
-    /*
-     * Samsung My Files and File Manager+ may be installed without advertising
-     * the generic OpenIntents directory MIME type. In that case, resolving a
-     * package-scoped ACTION_VIEW intent incorrectly hides an installed app.
-     * Add their explicit launcher activities as chooser targets and pass the
-     * selected folder URI/path as a best-effort deep-link handoff.
-     */
     val packageManager = context.packageManager
-    val managerTargets = buildList {
-        val samsungComponent = packageManager
-            .getLaunchIntentForPackage("com.sec.android.app.myfiles")
-            ?.component
-        if (samsungComponent != null &&
-            Intent(directoryIntent).setPackage("com.sec.android.app.myfiles")
-                .resolveActivity(packageManager) == null
-        ) {
-            add(Intent(Intent.ACTION_MAIN).setComponent(samsungComponent).apply {
+    val targets = mutableListOf<FolderOpenTarget>()
+
+    fun addTarget(component: ComponentName, targetIntent: Intent, fallbackLabel: String) {
+        if (targets.any { it.component == component }) return
+        val label = runCatching {
+            packageManager.getActivityInfo(component, 0).loadLabel(packageManager).toString()
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: fallbackLabel
+        targets.add(FolderOpenTarget(label, component, targetIntent))
+    }
+
+    // Include apps that explicitly advertise support for the standard directory-view intent.
+    val directoryHandlers = runCatching {
+        packageManager.queryIntentActivities(directoryIntent, PackageManager.MATCH_DEFAULT_ONLY)
+    }.getOrDefault(emptyList())
+    directoryHandlers.forEach { resolved ->
+        val component = ComponentName(resolved.activityInfo.packageName, resolved.activityInfo.name)
+        addTarget(component, Intent(directoryIntent).setComponent(component), resolved.loadLabel(packageManager).toString())
+    }
+
+    // Some file managers do not register the directory MIME type. Keep them
+    // visible through their installed launcher activity and pass the folder
+    // path/URI using the handoff that was verified on the user's device.
+    if (targets.none { it.component.packageName == "com.sec.android.app.myfiles" }) {
+        val component = packageManager.getLaunchIntentForPackage("com.sec.android.app.myfiles")?.component
+        if (component != null) {
+            val targetIntent = Intent(Intent.ACTION_MAIN).setComponent(component).apply {
                 putExtra("com.sec.android.app.myfiles.external.ui.folderPath", absolutePath)
                 putExtra("org.openintents.extra.ABSOLUTE_PATH", absolutePath)
                 putExtra(DocumentsContract.EXTRA_INITIAL_URI, folder.uri)
                 clipData = ClipData.newUri(context.contentResolver, folderLabel, folder.uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            })
+            }
+            addTarget(component, targetIntent, "Samsung My Files")
         }
+    }
 
-        val fileManagerComponent = packageManager
-            .getLaunchIntentForPackage("com.alphainventor.filemanager")
-            ?.component
-        if (fileManagerComponent != null &&
-            Intent(directoryIntent).setPackage("com.alphainventor.filemanager")
-                .resolveActivity(packageManager) == null
-        ) {
-            add(Intent(Intent.ACTION_VIEW).setComponent(fileManagerComponent).apply {
+    if (targets.none { it.component.packageName == "com.alphainventor.filemanager" }) {
+        val component = packageManager.getLaunchIntentForPackage("com.alphainventor.filemanager")?.component
+        if (component != null) {
+            val targetIntent = Intent(Intent.ACTION_VIEW).setComponent(component).apply {
                 addCategory(Intent.CATEGORY_DEFAULT)
                 setDataAndType(folder.uri, DocumentsContract.Document.MIME_TYPE_DIR)
                 putExtra("org.openintents.extra.ABSOLUTE_PATH", absolutePath)
                 clipData = ClipData.newUri(context.contentResolver, folderLabel, folder.uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            })
+            }
+            addTarget(component, targetIntent, "File Manager+")
         }
     }
 
-    // The chooser now includes installed Samsung/File Manager+ apps even when
-    // they do not publish the generic directory-view intent filter.
-    val hasDirectoryHandler = runCatching {
-        directoryIntent.resolveActivity(packageManager) != null
-    }.getOrDefault(false)
-    if (managerTargets.isNotEmpty() || hasDirectoryHandler) {
-        val chooser = Intent.createChooser(directoryIntent, "Open folder with").apply {
-            if (managerTargets.isNotEmpty()) {
-                putExtra(Intent.EXTRA_INITIAL_INTENTS, managerTargets.toTypedArray())
-            }
-        }
-        runCatching { context.startActivity(chooser) }
-            .onFailure {
-                Toast.makeText(context, "Could not open the download folder.", Toast.LENGTH_LONG).show()
-            }
+    // Prefer Samsung My Files, then File Manager+, then other compatible managers.
+    val preferredPackages = listOf("com.sec.android.app.myfiles", "com.alphainventor.filemanager")
+    val orderedTargets = targets.sortedBy { target ->
+        val index = preferredPackages.indexOf(target.component.packageName)
+        if (index >= 0) index else preferredPackages.size
+    }
+
+    val preferences = context.getSharedPreferences("download_studio_ui", android.content.Context.MODE_PRIVATE)
+    val savedComponent = preferences.getString(FOLDER_MANAGER_PREFERENCE, null)
+        ?.let { ComponentName.unflattenFromString(it) }
+    if (savedComponent != null) {
+        val savedTarget = orderedTargets.firstOrNull { it.component == savedComponent }
+        if (savedTarget != null && startFolderTarget(context, savedTarget)) return
+        // The remembered app was removed or could no longer open the folder.
+        preferences.edit().remove(FOLDER_MANAGER_PREFERENCE).apply()
+    }
+
+    if (orderedTargets.isNotEmpty()) {
+        showFolderTargetChoice(context, orderedTargets)
         return
     }
 
@@ -712,6 +736,42 @@ private fun openDownloadedFolder(context: android.content.Context, item: Downloa
         Toast.makeText(context, "No compatible file manager could open this folder.", Toast.LENGTH_LONG).show()
     }
 }
+
+private fun showFolderTargetChoice(context: android.content.Context, targets: List<FolderOpenTarget>) {
+    var selectedIndex = 0
+    val labels = targets.map { it.label }.toTypedArray()
+    PlatformAlertDialog.Builder(context)
+        .setTitle("Open folder with")
+        .setMessage("Choose a file manager and decide whether to remember your choice.")
+        .setSingleChoiceItems(labels, selectedIndex) { _, which ->
+            selectedIndex = which
+        }
+        .setPositiveButton("Just once") { _, _ ->
+            startFolderTarget(context, targets[selectedIndex])
+        }
+        .setNeutralButton("Always") { _, _ ->
+            val target = targets[selectedIndex]
+            context.getSharedPreferences("download_studio_ui", android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putString(FOLDER_MANAGER_PREFERENCE, target.component.flattenToString())
+                .apply()
+            if (!startFolderTarget(context, target)) {
+                context.getSharedPreferences("download_studio_ui", android.content.Context.MODE_PRIVATE)
+                    .edit().remove(FOLDER_MANAGER_PREFERENCE).apply()
+            }
+        }
+        .setNegativeButton("Cancel", null)
+        .show()
+}
+
+private fun startFolderTarget(context: android.content.Context, target: FolderOpenTarget): Boolean =
+    runCatching {
+        context.startActivity(Intent(target.intent))
+        true
+    }.getOrElse {
+        Toast.makeText(context, "Could not open the download folder with ${target.label}.", Toast.LENGTH_LONG).show()
+        false
+    }
 
 private fun shareDownloadedFile(context: android.content.Context, item: DownloadItem) {
     val document = StorageAccess.findDownloadedDocument(context, item.outputPath)
