@@ -630,48 +630,75 @@ private fun openDownloadedFolder(context: android.content.Context, item: Downloa
         return
     }
 
-    // Open the actual SAF folder URI and provide the shared-storage path for
-    // file managers implementing the OpenIntents directory-view contract.
     val absolutePath = item.outputPath.substringBeforeLast('/', "").ifBlank {
         QueueStore.basePath(context).orEmpty()
     }
+    val folderLabel = folder.name ?: "Download folder"
     val directoryIntent = Intent(Intent.ACTION_VIEW).apply {
         addCategory(Intent.CATEGORY_DEFAULT)
         setDataAndType(folder.uri, DocumentsContract.Document.MIME_TYPE_DIR)
         putExtra("org.openintents.extra.ABSOLUTE_PATH", absolutePath)
-        clipData = ClipData.newUri(context.contentResolver, folder.name ?: "Download folder", folder.uri)
+        clipData = ClipData.newUri(context.contentResolver, folderLabel, folder.uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
-    // Try the two installed managers requested by the user, in preferred order.
-    // AndroidManifest.xml includes package visibility declarations for Android 11+.
-    val preferredPackages = listOf(
-        "com.sec.android.app.myfiles",
-        "com.alphainventor.filemanager"
-    )
-    for (packageName in preferredPackages) {
-        val target = Intent(directoryIntent).setPackage(packageName)
-        val launched = runCatching {
-            if (target.resolveActivity(context.packageManager) != null) {
-                context.startActivity(target)
-                true
-            } else {
-                false
-            }
-        }.getOrDefault(false)
-        if (launched) return
+    /*
+     * Samsung My Files and File Manager+ may be installed without advertising
+     * the generic OpenIntents directory MIME type. In that case, resolving a
+     * package-scoped ACTION_VIEW intent incorrectly hides an installed app.
+     * Add their explicit launcher activities as chooser targets and pass the
+     * selected folder URI/path as a best-effort deep-link handoff.
+     */
+    val packageManager = context.packageManager
+    val managerTargets = buildList {
+        val samsungComponent = packageManager
+            .getLaunchIntentForPackage("com.sec.android.app.myfiles")
+            ?.component
+        if (samsungComponent != null &&
+            Intent(directoryIntent).setPackage("com.sec.android.app.myfiles")
+                .resolveActivity(packageManager) == null
+        ) {
+            add(Intent(Intent.ACTION_MAIN).setComponent(samsungComponent).apply {
+                putExtra("com.sec.android.app.myfiles.external.ui.folderPath", absolutePath)
+                putExtra("org.openintents.extra.ABSOLUTE_PATH", absolutePath)
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, folder.uri)
+                clipData = ClipData.newUri(context.contentResolver, folderLabel, folder.uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        }
+
+        val fileManagerComponent = packageManager
+            .getLaunchIntentForPackage("com.alphainventor.filemanager")
+            ?.component
+        if (fileManagerComponent != null &&
+            Intent(directoryIntent).setPackage("com.alphainventor.filemanager")
+                .resolveActivity(packageManager) == null
+        ) {
+            add(Intent(Intent.ACTION_VIEW).setComponent(fileManagerComponent).apply {
+                addCategory(Intent.CATEGORY_DEFAULT)
+                setDataAndType(folder.uri, DocumentsContract.Document.MIME_TYPE_DIR)
+                putExtra("org.openintents.extra.ABSOLUTE_PATH", absolutePath)
+                clipData = ClipData.newUri(context.contentResolver, folderLabel, folder.uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        }
     }
 
-    // Otherwise offer any installed file manager that supports directory VIEW.
+    // The chooser now includes installed Samsung/File Manager+ apps even when
+    // they do not publish the generic directory-view intent filter.
     val hasDirectoryHandler = runCatching {
-        directoryIntent.resolveActivity(context.packageManager) != null
+        directoryIntent.resolveActivity(packageManager) != null
     }.getOrDefault(false)
-    if (hasDirectoryHandler) {
-        runCatching {
-            context.startActivity(Intent.createChooser(directoryIntent, "Open folder with"))
-        }.onFailure {
-            Toast.makeText(context, "Could not open the download folder.", Toast.LENGTH_LONG).show()
+    if (managerTargets.isNotEmpty() || hasDirectoryHandler) {
+        val chooser = Intent.createChooser(directoryIntent, "Open folder with").apply {
+            if (managerTargets.isNotEmpty()) {
+                putExtra(Intent.EXTRA_INITIAL_INTENTS, managerTargets.toTypedArray())
+            }
         }
+        runCatching { context.startActivity(chooser) }
+            .onFailure {
+                Toast.makeText(context, "Could not open the download folder.", Toast.LENGTH_LONG).show()
+            }
         return
     }
 
