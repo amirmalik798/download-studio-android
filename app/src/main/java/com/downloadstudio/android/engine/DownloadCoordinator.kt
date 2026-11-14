@@ -43,6 +43,7 @@ object DownloadCoordinator {
     // list mutations and persistence so one worker cannot overwrite another's
     // most recent progress or status update.
     private val stateLock = Any()
+    private val initializationLock = Any()
     private val active = ConcurrentHashMap<String, Job>()
     private val cancelled = ConcurrentHashMap.newKeySet<String>()
     private val thermalDeferred = ConcurrentHashMap.newKeySet<String>()
@@ -57,12 +58,17 @@ object DownloadCoordinator {
     @Volatile private var bulkClearing = false
 
     fun initialize(context: Context) {
-        if (initialized) return
-        appContext = context.applicationContext
-        maxConcurrent = QueueStore.maxConcurrent(appContext)
-        _items.value = QueueStore.load(appContext).sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
-        initialized = true
-        if (_items.value.any { it.status in MONITORED_STATUSES || (it.status == DownloadStatus.QUEUED && !it.awaitingChoice) }) startMonitoringService()
+        synchronized(initializationLock) {
+            if (initialized) return
+            appContext = context.applicationContext
+            maxConcurrent = QueueStore.maxConcurrent(appContext)
+            _items.value = QueueStore.load(appContext)
+                .sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+            initialized = true
+        }
+        if (_items.value.any { it.status in MONITORED_STATUSES || (it.status == DownloadStatus.QUEUED && !it.awaitingChoice) }) {
+            startMonitoringService()
+        }
         registerThermalGuard()
         scope.launch {
             if (StorageAccess.isDownloadLocationConfigured(appContext) && _items.value.isEmpty()) {
@@ -185,10 +191,17 @@ object DownloadCoordinator {
         }
         if (missingIds.isEmpty() && movedPaths.isEmpty()) return
 
+        val originalById = completed.associateBy { it.id }
         synchronized(stateLock) {
-            _items.value = _items.value.filterNot { it.id in missingIds }.map { item ->
-                val newPath = movedPaths[item.id] ?: return@map item
-                item.copy(outputPath = newPath)
+            _items.value = _items.value.mapNotNull { current ->
+                val original = originalById[current.id] ?: return@mapNotNull current
+                // A retry or another state change may have happened while the SAF tree was scanned.
+                if (current.status != DownloadStatus.COMPLETED || current.outputPath != original.outputPath) {
+                    return@mapNotNull current
+                }
+                if (current.id in missingIds) return@mapNotNull null
+                val newPath = movedPaths[current.id] ?: return@mapNotNull current
+                current.copy(outputPath = newPath)
             }
             QueueStore.save(appContext, _items.value, durable = true)
         }
@@ -238,10 +251,12 @@ object DownloadCoordinator {
                 DownloadStatus.PAUSED
             )
         }.forEach { item ->
-            if (!active.containsKey(item.id)) {
-                val monitor = scope.launch(start = CoroutineStart.LAZY) { monitorExisting(item) }
-                active[item.id] = monitor
+            val monitor = scope.launch(start = CoroutineStart.LAZY) { monitorExisting(item) }
+            val existing = active.putIfAbsent(item.id, monitor)
+            if (existing == null) {
                 monitor.start()
+            } else {
+                monitor.cancel()
             }
         }
     }
@@ -389,7 +404,7 @@ object DownloadCoordinator {
 
     fun stop(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
-        val running = item.status in setOf(
+        val running = id in active.keys || item.status in setOf(
             DownloadStatus.STARTING, DownloadStatus.DOWNLOADING,
             DownloadStatus.PAUSED, DownloadStatus.PROCESSING
         )
@@ -531,11 +546,25 @@ object DownloadCoordinator {
             // Clear that marker only after the thermal gate allows a real retry.
             thermalDeferred.remove(id)
             update(id) { it.copy(status = DownloadStatus.STARTING, progress = 0f, speed = "Starting…", eta = "—", error = "") }
+            val beforeLaunch = _items.value.firstOrNull { it.id == id }
+            if (beforeLaunch == null || beforeLaunch.status == DownloadStatus.STOPPED || id in cancelled) return
             val script = TermuxBridge.downloadScript(id, original.url, original.mode.name, destination)
             val launch = TermuxBridge.runShell(appContext, script, "Download Studio · ${original.mode.name.lowercase()}", true)
             if (launch.isFailure) throw launch.exceptionOrNull() ?: IllegalStateException("Termux could not start the download.")
-            update(id) { current ->
-                if (current.status == DownloadStatus.PAUSED) current else current.copy(status = DownloadStatus.DOWNLOADING, speed = "Connecting…")
+
+            val afterLaunch = _items.value.firstOrNull { it.id == id }
+            if (afterLaunch == null || afterLaunch.status == DownloadStatus.STOPPED || id in cancelled) {
+                // The queue item may have been removed while Android was handing the command to Termux.
+                signal(id, "INT")
+                return
+            }
+            if (afterLaunch.status == DownloadStatus.PAUSED) {
+                signal(id, "STOP")
+            } else {
+                update(id) { current ->
+                    if (current.status == DownloadStatus.PAUSED || current.status == DownloadStatus.STOPPED) current
+                    else current.copy(status = DownloadStatus.DOWNLOADING, speed = "Connecting…")
+                }
             }
 
             var lastLog = ""
@@ -544,8 +573,11 @@ object DownloadCoordinator {
             var sawPid = false
             var stopReason = ""
             while (SystemClock.elapsedRealtime() - startAt < MAX_DOWNLOAD_RUNTIME_MS) {
-                val current = _items.value.firstOrNull { it.id == id } ?: break
-                if (current.status == DownloadStatus.STOPPED || id in cancelled) break
+                val current = _items.value.firstOrNull { it.id == id }
+                if (current == null || current.status == DownloadStatus.STOPPED || id in cancelled) {
+                    signal(id, "INT")
+                    break
+                }
                 if (current.status == DownloadStatus.PAUSED) {
                     lastActivityAt = SystemClock.elapsedRealtime()
                     delay(MONITOR_INTERVAL_MS * 2)
