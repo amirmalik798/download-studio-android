@@ -483,9 +483,17 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
     var search by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(DownloadFilter.ALL) }
     var advancedFilters by remember { mutableStateOf(false) }
+    var helpOpen by remember { mutableStateOf(false) }
     var showClearConfirmation by remember { mutableStateOf(false) }
     var itemPendingRemoval by remember { mutableStateOf<DownloadItem?>(null) }
     val todayStart = remember { startOfLocalDay(System.currentTimeMillis()) }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            delay(30_000L)
+            DownloadCoordinator.synchronizeDownloadsFolder()
+        }
+    }
 
     val activeCount = items.count {
         it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING)
@@ -559,6 +567,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
             ) {
                 Text("${visibleItems.size} / ${items.size}", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
+            IconButton(onClick = { helpOpen = true }) { Icon(Icons.Default.Info, "Downloads help", tint = TextMuted) }
             IconButton(onClick = { advancedFilters = !advancedFilters }) {
                 Icon(
                     if (advancedFilters) Icons.Default.Tune else Icons.Default.FilterList,
@@ -649,6 +658,23 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
             }
         }
 
+        if (helpOpen) {
+            AlertDialog(
+                onDismissRequest = { helpOpen = false },
+                containerColor = Panel,
+                title = { Text("Downloads help", color = TextMain) },
+                text = {
+                    Text(
+                        "New links always appear at the top. Status filters show active, queued, completed, or failed items. Use More filters for Video, Audio, and Today. Search checks titles, websites, and source links. Removing an entry never deletes the media file. Missing or moved files are reconciled with your selected folder.",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
+                    )
+                },
+                confirmButton = { TextButton(onClick = { helpOpen = false }) { Text("Got it", color = Cyan) } }
+            )
+        }
+
         if (showClearConfirmation) {
             AlertDialog(
                 onDismissRequest = { showClearConfirmation = false },
@@ -681,7 +707,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 title = { Text("Remove this entry?", color = TextMain, fontWeight = FontWeight.Bold) },
                 text = {
                     Text(
-                        "\"\${displayTitle(item)}\" will be removed from Download Studio. The saved media file will not be deleted.",
+                        "\"${displayTitle(item)}\" will be removed from Download Studio. The saved media file will not be deleted.",
                         color = TextMuted,
                         fontSize = 12.sp,
                         lineHeight = 18.sp
