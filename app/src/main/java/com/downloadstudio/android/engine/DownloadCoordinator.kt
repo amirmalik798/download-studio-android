@@ -9,6 +9,8 @@ import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.util.StorageAccess
+import com.downloadstudio.android.notifications.LinkStatusNotification
+import com.downloadstudio.android.notifications.LinkMetadataResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineStart
@@ -175,6 +177,105 @@ object DownloadCoordinator {
         return id
     }
 
+    /**
+     * Add a link to the persistent queue without starting the download.
+     * A user must explicitly choose video or audio from the queue row.
+     */
+    fun enqueueForChoice(url: String, preferredMode: DownloadMode = DownloadMode.VIDEO, notificationEligible: Boolean = false): String {
+        val cleaned = url.trim()
+        val uri = android.net.Uri.parse(cleaned)
+        require((uri.scheme == "https" || uri.scheme == "http") && !uri.host.isNullOrBlank() && uri.userInfo == null) {
+            "Please provide a valid HTTP or HTTPS media link."
+        }
+        require(cleaned.length <= 4096) { "The media link is too long." }
+        val id = UUID.randomUUID().toString().replace("-", "").take(12)
+        val item = DownloadItem(
+            id = id,
+            url = cleaned,
+            title = titleFromUrl(cleaned),
+            mode = preferredMode,
+            awaitingChoice = true,
+            sourceName = sourceNameFromUrl(cleaned),
+            notificationEligible = notificationEligible
+        )
+        synchronized(stateLock) {
+            _items.value = _items.value + item
+            QueueStore.save(appContext, _items.value)
+        }
+        return id
+    }
+
+    /** Update metadata on the same waiting queue entry; never create a second row. */
+    fun updateLinkMetadata(
+        id: String,
+        title: String,
+        thumbnailUrl: String,
+        durationSeconds: Long,
+        estimatedSizeBytes: Long,
+        sourceName: String
+    ): Boolean {
+        var updated = false
+        synchronized(stateLock) {
+            val current = _items.value.firstOrNull { it.id == id && it.awaitingChoice } ?: return false
+            _items.value = _items.value.map { item ->
+                if (item.id != id) item else item.copy(
+                    title = title.takeIf { it.isNotBlank() } ?: current.title,
+                    thumbnailUrl = thumbnailUrl.takeIf { it.isNotBlank() } ?: current.thumbnailUrl,
+                    durationSeconds = durationSeconds.takeIf { it > 0L } ?: current.durationSeconds,
+                    estimatedSizeBytes = estimatedSizeBytes.takeIf { it > 0L } ?: current.estimatedSizeBytes,
+                    sourceName = sourceName.takeIf { it.isNotBlank() } ?: current.sourceName
+                )
+            }
+            QueueStore.save(appContext, _items.value)
+            updated = true
+        }
+        return updated
+    }
+
+    /** Turn a waiting link into a normal download, retaining its queue identity. */
+    fun chooseLinkDownload(id: String, mode: DownloadMode): Boolean {
+        var chosen = false
+        synchronized(stateLock) {
+            val current = _items.value.firstOrNull { it.id == id && it.awaitingChoice } ?: return false
+            _items.value = _items.value.map { item ->
+                if (item.id != id) item else item.copy(
+                    mode = mode,
+                    status = DownloadStatus.QUEUED,
+                    awaitingChoice = false,
+                    progress = 0f,
+                    speed = "—",
+                    eta = "—",
+                    downloaded = "—",
+                    error = ""
+                )
+            }
+            QueueStore.save(appContext, _items.value)
+            chosen = true
+        }
+        if (chosen) {
+            LinkMetadataResolver.cancel(appContext, id)
+            LinkStatusNotification.cancel(appContext, id)
+            pump()
+        }
+        return chosen
+    }
+
+    private fun sourceNameFromUrl(raw: String): String = runCatching {
+        val host = android.net.Uri.parse(raw).host.orEmpty().lowercase()
+            .removePrefix("www.").removePrefix("m.")
+        when {
+            host == "youtu.be" || host.endsWith("youtube.com") -> "YouTube"
+            host == "facebook.com" || host.endsWith(".facebook.com") || host.endsWith("fb.watch") -> "Facebook"
+            host == "instagram.com" || host.endsWith(".instagram.com") -> "Instagram"
+            host == "tiktok.com" || host.endsWith(".tiktok.com") -> "TikTok"
+            host == "x.com" || host == "twitter.com" -> "X"
+            host == "vimeo.com" || host.endsWith(".vimeo.com") -> "Vimeo"
+            host == "reddit.com" || host.endsWith(".reddit.com") -> "Reddit"
+            host.isBlank() -> "Website"
+            else -> host.substringBefore(':').replaceFirstChar { it.uppercase() }
+        }
+    }.getOrDefault("Website")
+
     fun pause(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
         if (item.status != DownloadStatus.DOWNLOADING && item.status != DownloadStatus.STARTING) return
@@ -243,6 +344,8 @@ object DownloadCoordinator {
             _items.value = _items.value.filterNot { it.id == id }
             QueueStore.save(appContext, _items.value)
         }
+        LinkMetadataResolver.cancel(appContext, id)
+        LinkStatusNotification.cancel(appContext, id)
     }
 
     fun clearFinished() {
@@ -258,7 +361,8 @@ object DownloadCoordinator {
         // Close the queue pump gate before taking the snapshot. Workers that finish
         // during this operation must not launch another queued item.
         bulkClearing = true
-        val idsToStop = synchronized(stateLock) {
+        val idsToClear = synchronized(stateLock) {
+            val notificationIds = _items.value.map { it.id }
             val ids = (active.keys + _items.value.filter {
                 it.status in setOf(
                     DownloadStatus.DOWNLOADING, DownloadStatus.STARTING,
@@ -267,8 +371,13 @@ object DownloadCoordinator {
             }.map { it.id }).toSet()
             _items.value = emptyList()
             QueueStore.save(appContext, emptyList())
-            ids
+            ids to notificationIds
         }
+        idsToClear.second.forEach {
+            LinkMetadataResolver.cancel(appContext, it)
+            LinkStatusNotification.cancel(appContext, it)
+        }
+        val idsToStop = idsToClear.first
 
         idsToStop.forEach { id ->
             cancelled.add(id)
@@ -293,7 +402,7 @@ object DownloadCoordinator {
         scope.launch {
             mutex.withLock {
                 while (!bulkClearing && active.size < maxConcurrent && currentThermalStatus < THERMAL_DEFER_THRESHOLD) {
-                    val next = _items.value.firstOrNull { it.status == DownloadStatus.QUEUED && it.id !in active.keys } ?: break
+                    val next = _items.value.firstOrNull { it.status == DownloadStatus.QUEUED && !it.awaitingChoice && it.id !in active.keys } ?: break
                     val worker = scope.launch(start = CoroutineStart.LAZY) { runJob(next) }
                     active[next.id] = worker
                     worker.start()

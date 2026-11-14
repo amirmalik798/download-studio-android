@@ -7,4 +7,12 @@
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowBackground">#090D18</item>
     </style>
+    <style name="Theme.DownloadStudio.ShareReceiver" parent="Theme.DownloadStudio">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
 </resources>

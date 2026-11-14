@@ -68,9 +68,12 @@ object TermuxBridge {
         val temp = "$stateDir/preview-$requestId.tmp"
         val parser = "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); " +
             "clean=lambda v: str(v or '').replace('\\r',' ').replace('\\n',' ').strip(); " +
+            "formats=d.get('requested_formats') or []; sizes=[f.get('filesize_approx') or f.get('filesize') or 0 for f in formats if isinstance(f,dict)]; " +
+            "size=d.get('filesize_approx') or d.get('filesize') or (sum(sizes) if sizes else 0); " +
             "print('DS_TITLE:'+clean(d.get('title'))); " +
             "print('DS_THUMBNAIL:'+clean(d.get('thumbnail'))); " +
-            "print('DS_DURATION:'+clean(d.get('duration')))"
+            "print('DS_DURATION:'+clean(d.get('duration'))); " +
+            "print('DS_SIZE:'+clean(size))"
         return "mkdir -p ${q(stateDir)}; " +
             "rm -f ${q(raw)} ${q(temp)}; printf 'PENDING\\n' > ${q(result)}; " +
             "if timeout 24s yt-dlp --ignore-config --no-warnings --no-playlist --skip-download --dump-single-json " +
