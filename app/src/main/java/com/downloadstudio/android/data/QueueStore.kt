@@ -140,7 +140,8 @@ object QueueStore {
                         sourceName = o.optString("sourceName", "").take(120),
                         durationSeconds = o.optLong("durationSeconds", 0L).coerceAtLeast(0L),
                         estimatedSizeBytes = o.optLong("estimatedSizeBytes", 0L).coerceAtLeast(0L),
-                        notificationEligible = o.optBoolean("notificationEligible", false)
+                        notificationEligible = o.optBoolean("notificationEligible", false),
+                        runToken = o.optString("runToken").takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,48}")) }.orEmpty()
                     )
                 )
             }
@@ -172,6 +173,7 @@ object QueueStore {
                 put("durationSeconds", item.durationSeconds)
                 put("estimatedSizeBytes", item.estimatedSizeBytes)
                 put("notificationEligible", item.notificationEligible)
+                put("runToken", item.runToken)
             })
         }
     }
