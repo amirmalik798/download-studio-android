@@ -213,7 +213,11 @@ object LinkMetadataResolver {
 
     private fun safeImageUrl(raw: String): String {
         val candidate = runCatching {
-            val value = if (raw.startsWith("//")) "https:$raw" else raw
+            val value = when {
+                raw.startsWith("//") -> "https:$raw"
+                raw.startsWith("http://", ignoreCase = true) -> "https://" + raw.substringAfter("://")
+                else -> raw
+            }
             URI(value).normalize().toString()
         }.getOrNull() ?: return ""
         return candidate.takeIf { isPublicHttpsUrl(it) }.orEmpty()
