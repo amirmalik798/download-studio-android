@@ -215,7 +215,9 @@ object DownloadCoordinator {
     }
 
     private fun startMonitoringService() {
-        if (!initialized || !monitorServiceRequested.compareAndSet(false, true)) return
+        if (!initialized) return
+        val hasWork = _items.value.any { !it.awaitingChoice && it.status in setOf(DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING) }
+        if (!hasWork || !monitorServiceRequested.compareAndSet(false, true)) return
         runCatching {
             ContextCompat.startForegroundService(
                 appContext,
