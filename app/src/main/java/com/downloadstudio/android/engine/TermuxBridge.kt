@@ -135,9 +135,12 @@ object TermuxBridge {
     }
 
     fun signalScript(destination: String, id: String, signal: String): String {
+        require(id.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid download id." }
         require(signal in setOf("STOP", "CONT", "INT", "TERM"))
         val pidFile = "$destination/DownloadStudioState/$id.pid"
         return "ds_n=0; while [ ! -f ${shellQuote(pidFile)} ] && [ \"\$ds_n\" -lt 20 ]; do sleep 0.25; ds_n=\$((ds_n+1)); done; " +
-            "if [ -f ${shellQuote(pidFile)} ]; then ds_pid=\$(cat ${shellQuote(pidFile)}); kill -$signal \"\$ds_pid\" 2>/dev/null || true; fi"
+            "if [ -f ${shellQuote(pidFile)} ]; then ds_pid=\$(cat ${shellQuote(pidFile)}); " +
+            "case \"\$ds_pid\" in *[!0-9]*) exit 0 ;; esac; [ -n \"\$ds_pid\" ] || exit 0; " +
+            "kill -CONT \"\$ds_pid\" 2>/dev/null || true; sleep 0.1; kill -$signal \"\$ds_pid\" 2>/dev/null || true; fi"
     }
 }
