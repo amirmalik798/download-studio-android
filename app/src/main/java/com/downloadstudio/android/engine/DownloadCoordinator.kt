@@ -414,7 +414,7 @@ object DownloadCoordinator {
         )
         if (running) {
             cancelled.add(id)
-            signal(id, "INT")
+            signal(id, "INT", item.runToken)
         } else cancelled.remove(id)
         thermalDeferred.remove(id)
         update(id) {
