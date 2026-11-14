@@ -48,6 +48,7 @@ import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.engine.DownloadCoordinator
 import com.downloadstudio.android.notifications.LinkMetadataResolver
+import com.downloadstudio.android.notifications.LinkStatusNotification
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.Dispatchers
@@ -108,6 +109,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncoming(intent: Intent?) {
+        val notificationQueueId = intent?.data
+            ?.takeIf { intent.action == Intent.ACTION_VIEW && it.scheme == "downloadstudio" && it.host == "queue" }
+            ?.lastPathSegment
+        if (!notificationQueueId.isNullOrBlank()) {
+            // Opening the status notification is an explicit dismissal of that
+            // notification, but it must never remove the underlying queue item.
+            LinkStatusNotification.markDismissed(applicationContext, notificationQueueId)
+            return
+        }
         val raw = when (intent?.action) {
             Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
             Intent.ACTION_VIEW -> intent.dataString
