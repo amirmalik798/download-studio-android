@@ -20,6 +20,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items as lazyItems
@@ -95,6 +96,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPostResume() {
         super.onPostResume()
+        DownloadCoordinator.synchronizeDownloadsFolder()
         LinkStatusNotification.ensureChannel(this)
 
         if (LinkStatusNotification.canPost(this)) {
@@ -464,100 +466,211 @@ private fun ShareFeatureCard() {
     }
 }
 
-private enum class DownloadSort(val label: String) {
-    NAME_ASC("Name · A–Z"),
-    NAME_DESC("Name · Z–A"),
-    DATE_NEWEST("Date · Newest first"),
-    DATE_OLDEST("Date · Oldest first")
+private enum class DownloadFilter(val label: String) {
+    ALL("All"),
+    ACTIVE("Active"),
+    QUEUED("Queued"),
+    DOWNLOADING("Downloading"),
+    COMPLETED("Completed"),
+    FAILED("Failed"),
+    VIDEO("Video"),
+    AUDIO("Audio"),
+    TODAY("Today")
 }
-
-private enum class DownloadFilter { ALL, VIDEO, AUDIO, DOWNLOADING, DOWNLOADED }
 
 @Composable
 private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem) -> Unit) {
     var search by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(DownloadFilter.ALL) }
-    var sort by remember { mutableStateOf(DownloadSort.DATE_NEWEST) }
-    var sortExpanded by remember { mutableStateOf(false) }
-    var toolsExpanded by remember { mutableStateOf(false) }
+    var advancedFilters by remember { mutableStateOf(false) }
     var showClearConfirmation by remember { mutableStateOf(false) }
     var itemPendingRemoval by remember { mutableStateOf<DownloadItem?>(null) }
-    val active = items.count { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }
-    val visibleItems = remember(items, search, filter, sort) {
-        val matches = items.filter { item ->
-            val categoryMatches = when (filter) {
-                DownloadFilter.ALL -> true
-                DownloadFilter.VIDEO -> item.awaitingChoice || item.mode == DownloadMode.VIDEO
-                DownloadFilter.AUDIO -> item.awaitingChoice || item.mode == DownloadMode.AUDIO
-                DownloadFilter.DOWNLOADING -> item.status in setOf(DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)
-                DownloadFilter.DOWNLOADED -> item.status == DownloadStatus.COMPLETED
+    val todayStart = remember { startOfLocalDay(System.currentTimeMillis()) }
+
+    val activeCount = items.count {
+        it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING)
+    }
+    val queuedCount = items.count { it.awaitingChoice || it.status == DownloadStatus.QUEUED }
+    val completedCount = items.count { it.status == DownloadStatus.COMPLETED }
+    val failedCount = items.count { it.status in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED) }
+    val counts = mapOf(
+        DownloadFilter.ALL to items.size,
+        DownloadFilter.ACTIVE to items.count {
+            it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED)
+        },
+        DownloadFilter.QUEUED to queuedCount,
+        DownloadFilter.DOWNLOADING to activeCount,
+        DownloadFilter.COMPLETED to completedCount,
+        DownloadFilter.FAILED to failedCount,
+        DownloadFilter.VIDEO to items.count { it.awaitingChoice || it.mode == DownloadMode.VIDEO },
+        DownloadFilter.AUDIO to items.count { it.awaitingChoice || it.mode == DownloadMode.AUDIO },
+        DownloadFilter.TODAY to items.count { it.createdAt >= todayStart }
+    )
+
+    val visibleItems = remember(items, search, filter, todayStart) {
+        items.asSequence()
+            .filter { item ->
+                val matchesFilter = when (filter) {
+                    DownloadFilter.ALL -> true
+                    DownloadFilter.ACTIVE -> item.status in setOf(
+                        DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED
+                    )
+                    DownloadFilter.QUEUED -> item.awaitingChoice || item.status == DownloadStatus.QUEUED
+                    DownloadFilter.DOWNLOADING -> item.status in setOf(
+                        DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING
+                    )
+                    DownloadFilter.COMPLETED -> item.status == DownloadStatus.COMPLETED
+                    DownloadFilter.FAILED -> item.status in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED)
+                    DownloadFilter.VIDEO -> item.awaitingChoice || item.mode == DownloadMode.VIDEO
+                    DownloadFilter.AUDIO -> item.awaitingChoice || item.mode == DownloadMode.AUDIO
+                    DownloadFilter.TODAY -> item.createdAt >= todayStart
+                }
+                val query = search.trim()
+                matchesFilter && (
+                    query.isBlank() ||
+                        displayTitle(item).contains(query, ignoreCase = true) ||
+                        item.sourceName.contains(query, ignoreCase = true) ||
+                        item.url.contains(query, ignoreCase = true)
+                    )
             }
-            categoryMatches && displayTitle(item).contains(search.trim(), ignoreCase = true)
-        }
-        when (sort) {
-            DownloadSort.NAME_ASC -> matches.sortedBy { displayTitle(it).lowercase(Locale.ROOT) }
-            DownloadSort.NAME_DESC -> matches.sortedByDescending { displayTitle(it).lowercase(Locale.ROOT) }
-            DownloadSort.DATE_NEWEST -> matches.sortedByDescending { downloadTimestamp(it) }
-            DownloadSort.DATE_OLDEST -> matches.sortedBy { downloadTimestamp(it) }
-        }
+            // Arrival time never changes when status or progress changes.
+            .sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+            .toList()
     }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp)) {
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("Downloads", color = TextMain, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
-                Text("${items.size} items · $active active · ${items.count { it.status == DownloadStatus.COMPLETED }} completed", color = TextMuted, fontSize = 11.sp)
+                Text(
+                    "$activeCount active · $completedCount completed · $failedCount failed",
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
             }
-            Text("${visibleItems.size}", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-            IconButton(onClick = { toolsExpanded = !toolsExpanded }) {
-                Icon(if (toolsExpanded) Icons.Default.Close else Icons.Default.Search, "Search and filters", tint = Cyan)
+            Box(
+                Modifier.clip(RoundedCornerShape(11.dp))
+                    .background(Panel2)
+                    .border(1.dp, Line, RoundedCornerShape(11.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                Text("${visibleItems.size} / ${items.size}", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            IconButton(onClick = { advancedFilters = !advancedFilters }) {
+                Icon(
+                    if (advancedFilters) Icons.Default.Tune else Icons.Default.FilterList,
+                    "More filters",
+                    tint = Cyan
+                )
             }
             IconButton(onClick = { showClearConfirmation = true }, enabled = items.isNotEmpty()) {
                 Icon(Icons.Default.DeleteSweep, "Clear downloads list", tint = if (items.isNotEmpty()) Red else TextMuted)
             }
         }
-        AnimatedVisibility(visible = toolsExpanded) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = search, onValueChange = { search = it }, modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Search by name", color = TextMuted) },
-                    leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
-                    trailingIcon = { if (search.isNotBlank()) IconButton(onClick = { search = "" }) { Icon(Icons.Default.Close, "Clear search", tint = TextMuted) } },
-                    singleLine = true, shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = TextMain, unfocusedTextColor = TextMain,
-                        focusedBorderColor = Blue, unfocusedBorderColor = Line, cursorColor = Cyan,
-                        focusedContainerColor = Color(0xFF0C1525), unfocusedContainerColor = Color(0xFF0C1525)))
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-                    FilterChip(selected = filter == DownloadFilter.ALL, onClick = { filter = DownloadFilter.ALL }, label = { Text("All") })
-                    FilterChip(selected = filter == DownloadFilter.VIDEO, onClick = { filter = DownloadFilter.VIDEO }, label = { Text("Video") })
-                    FilterChip(selected = filter == DownloadFilter.AUDIO, onClick = { filter = DownloadFilter.AUDIO }, label = { Text("Audio") })
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-                    FilterChip(selected = filter == DownloadFilter.DOWNLOADING, onClick = { filter = DownloadFilter.DOWNLOADING }, label = { Text("Downloading") })
-                    FilterChip(selected = filter == DownloadFilter.DOWNLOADED, onClick = { filter = DownloadFilter.DOWNLOADED }, label = { Text("Downloaded") })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Text("SORT BY", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
-                    Spacer(Modifier.weight(1f))
-                    Box {
-                        TextButton(onClick = { sortExpanded = true }) {
-                            Icon(Icons.Default.Sort, null, tint = Cyan, modifier = Modifier.size(17.dp))
-                            Spacer(Modifier.width(5.dp)); Text(sort.label, color = Cyan, fontSize = 11.sp)
-                            Icon(Icons.Default.ArrowDropDown, null, tint = Cyan)
-                        }
-                        DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
-                            DownloadSort.values().forEach { option -> DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortExpanded = false }) }
-                        }
+
+        OutlinedTextField(
+            value = search,
+            onValueChange = { search = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Search titles, websites, or links", color = TextMuted) },
+            leadingIcon = { Icon(Icons.Default.Search, null, tint = Cyan) },
+            trailingIcon = {
+                if (search.isNotBlank()) {
+                    IconButton(onClick = { search = "" }) {
+                        Icon(Icons.Default.Close, "Clear search", tint = TextMuted)
                     }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(15.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = TextMain,
+                unfocusedTextColor = TextMain,
+                focusedBorderColor = Blue,
+                unfocusedBorderColor = Line,
+                cursorColor = Cyan,
+                focusedContainerColor = Panel,
+                unfocusedContainerColor = Panel
+            )
+        )
+
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            DownloadFilterChip(filter, DownloadFilter.ALL, counts) { filter = it }
+            DownloadFilterChip(filter, DownloadFilter.ACTIVE, counts) { filter = it }
+            DownloadFilterChip(filter, DownloadFilter.QUEUED, counts) { filter = it }
+            DownloadFilterChip(filter, DownloadFilter.COMPLETED, counts) { filter = it }
+            DownloadFilterChip(filter, DownloadFilter.FAILED, counts) { filter = it }
+        }
+
+        AnimatedVisibility(visible = advancedFilters) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(Panel)
+                    .border(1.dp, Line, RoundedCornerShape(15.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("FILE TYPE & DATE", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    DownloadFilterChip(filter, DownloadFilter.VIDEO, counts) { filter = it }
+                    DownloadFilterChip(filter, DownloadFilter.AUDIO, counts) { filter = it }
+                    DownloadFilterChip(filter, DownloadFilter.TODAY, counts) { filter = it }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Newest arrivals first", color = TextMain, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.weight(1f))
+                    Text("Fixed order", color = Cyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+                Text("A download keeps its position even when its status changes.", color = TextMuted, fontSize = 10.sp)
+            }
+        }
+
+        if (filter != DownloadFilter.ALL || search.isNotBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Showing ${visibleItems.size} items", color = TextMuted, fontSize = 10.sp)
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    onClick = { search = ""; filter = DownloadFilter.ALL },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text("Clear filters", color = Cyan, fontSize = 11.sp)
                 }
             }
         }
+
         if (showClearConfirmation) {
-            AlertDialog(onDismissRequest = { showClearConfirmation = false }, containerColor = Panel,
+            AlertDialog(
+                onDismissRequest = { showClearConfirmation = false },
+                containerColor = Panel,
                 title = { Text("Clear downloads list?", color = TextMain) },
-                text = { Text("This removes download records and stops active jobs. Files already saved on your device will not be deleted.", color = TextMuted) },
-                confirmButton = { TextButton(onClick = { DownloadCoordinator.clearAll(); showClearConfirmation = false }) { Text("Clear list", color = Red) } },
-                dismissButton = { TextButton(onClick = { showClearConfirmation = false }) { Text("Cancel") } })
+                text = {
+                    Text(
+                        "This removes the records and stops active downloads. Files already saved in your Downloads folder will stay there.",
+                        color = TextMuted
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { DownloadCoordinator.clearAll(); showClearConfirmation = false }) {
+                        Text("Clear list", color = Red)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearConfirmation = false }) { Text("Cancel") }
+                }
+            )
         }
+
         itemPendingRemoval?.let { item ->
             AlertDialog(
                 onDismissRequest = { itemPendingRemoval = null },
@@ -565,10 +678,10 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 shape = RoundedCornerShape(22.dp),
                 tonalElevation = 0.dp,
                 icon = { Icon(Icons.Default.DeleteOutline, null, tint = Red, modifier = Modifier.size(24.dp)) },
-                title = { Text("Discard this queue entry?", color = TextMain, fontWeight = FontWeight.Bold) },
+                title = { Text("Remove this entry?", color = TextMain, fontWeight = FontWeight.Bold) },
                 text = {
                     Text(
-                        "\"${displayTitle(item)}\" will be removed from Download Studio. Any media file already saved on your device will remain untouched.",
+                        "\"\${displayTitle(item)}\" will be removed from Download Studio. The saved media file will not be deleted.",
                         color = TextMuted,
                         fontSize = 12.sp,
                         lineHeight = 18.sp
@@ -579,7 +692,9 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                         onClick = { DownloadCoordinator.remove(item.id); itemPendingRemoval = null },
                         colors = ButtonDefaults.buttonColors(containerColor = Red, contentColor = Color.White),
                         shape = RoundedCornerShape(12.dp)
-                    ) { Text("Discard entry", fontWeight = FontWeight.Bold) }
+                    ) {
+                        Text("Remove entry", fontWeight = FontWeight.Bold)
+                    }
                 },
                 dismissButton = {
                     OutlinedButton(
@@ -587,21 +702,89 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted),
                         border = androidx.compose.foundation.BorderStroke(1.dp, Line)
-                    ) { Text("Keep entry") }
+                    ) {
+                        Text("Keep entry")
+                    }
                 }
             )
         }
-        Spacer(Modifier.height(5.dp))
+
         when {
-            items.isEmpty() -> EmptyState("No downloads yet", "Paste a link or share a supported media URL from another app.", Icons.Default.CloudDownload)
-            visibleItems.isEmpty() -> EmptyState("No matching downloads", "Try another search term or category filter.", Icons.Default.Search)
-            else -> LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
+            items.isEmpty() -> EmptyState(
+                "No downloads yet",
+                "Paste a link or share a supported media URL from another app.",
+                Icons.Default.CloudDownload
+            )
+            visibleItems.isEmpty() -> EmptyState(
+                "No matching downloads",
+                "Try another filter or search. Your downloads are still saved.",
+                Icons.Default.Search
+            )
+            else -> LazyColumn(
+                Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(bottom = 18.dp)
+            ) {
                 lazyItems(visibleItems, key = { it.id }) { item ->
                     DownloadRow(item, onClick = { onOpenItem(item) }, onRemoveRequest = { itemPendingRemoval = item })
                 }
             }
         }
     }
+}
+
+@Composable
+private fun DownloadFilterChip(
+    selectedFilter: DownloadFilter,
+    option: DownloadFilter,
+    counts: Map<DownloadFilter, Int>,
+    onSelect: (DownloadFilter) -> Unit
+) {
+    val selected = selectedFilter == option
+    val tint = when (option) {
+        DownloadFilter.COMPLETED -> Green
+        DownloadFilter.FAILED -> Red
+        DownloadFilter.QUEUED -> Violet
+        DownloadFilter.VIDEO -> Blue
+        DownloadFilter.AUDIO -> Green
+        else -> Cyan
+    }
+    FilterChip(
+        selected = selected,
+        onClick = { onSelect(if (selected) DownloadFilter.ALL else option) },
+        label = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(option.label, maxLines = 1)
+                Text(
+                    counts[option]?.toString() ?: "0",
+                    color = if (selected) tint else TextMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 9.sp
+                )
+            }
+        },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = tint.copy(alpha = .16f),
+            selectedLabelColor = tint,
+            containerColor = Panel,
+            labelColor = TextMuted
+        ),
+        border = FilterChipDefaults.filterChipBorder(
+            enabled = true,
+            selected = selected,
+            borderColor = Line,
+            selectedBorderColor = tint.copy(alpha = .65f)
+        )
+    )
+}
+
+private fun startOfLocalDay(timestamp: Long): Long {
+    val calendar = java.util.Calendar.getInstance().apply { timeInMillis = timestamp }
+    calendar.set(java.util.Calendar.HOUR_OF_DAY, 0)
+    calendar.set(java.util.Calendar.MINUTE, 0)
+    calendar.set(java.util.Calendar.SECOND, 0)
+    calendar.set(java.util.Calendar.MILLISECOND, 0)
+    return calendar.timeInMillis
 }
 
 @Composable
