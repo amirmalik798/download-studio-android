@@ -179,6 +179,15 @@ def main() -> int:
     require("update(id, durable = true)" in coordinator and
             "QueueStore.save(appContext, _items.value, durable = durable)" in coordinator,
             "The execution token is not durably committed before starting Termux")
+    require("bulkClearing = false" + chr(10) + "        pump()" in coordinator and
+            "cancelled.remove(id)" in coordinator[coordinator.index("private suspend fun monitorExisting"):coordinator.index("private fun parseProgress")],
+            "Queue clear/recovery can strand new entries or stale cancellation markers")
+    require("afterLaunch.status == DownloadStatus.QUEUED || id in thermalDeferred" in coordinator and
+            "signal(id, \"INT\", runToken)" in coordinator,
+            "Thermal changes during the Termux handoff can be overwritten")
+    require('"\\$ds_n" -lt 120' in termux[termux.index("fun signalScript"):],
+            "Stop signals do not wait long enough for delayed Termux process startup")
+
     run_job = coordinator[coordinator.index("private suspend fun runJob"):coordinator.index("private suspend fun monitorExisting")]
     recovery_monitor = coordinator[coordinator.index("private suspend fun monitorExisting"):coordinator.index("private fun parseProgress")]
     require("signal(id, \"INT\", runToken)" in run_job and "signal(id, \"STOP\", runToken)" in run_job and
