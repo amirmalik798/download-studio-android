@@ -126,7 +126,7 @@ object DownloadCoordinator {
         _items.value.filter { it.id in active.keys && it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }.forEach { item ->
             if (thermalDeferred.add(item.id)) {
                 update(item.id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Paused automatically because the device is too warm. It will resume after cooling.") }
-                signal(item.id, "INT")
+                signal(item.id, "INT", item.runToken)
             }
         }
     }
@@ -392,7 +392,7 @@ object DownloadCoordinator {
         val item = _items.value.firstOrNull { it.id == id } ?: return
         if (item.status != DownloadStatus.DOWNLOADING && item.status != DownloadStatus.STARTING) return
         update(id) { it.copy(status = DownloadStatus.PAUSED, speed = "Paused", error = "") }
-        signal(id, "STOP")
+        signal(id, "STOP", item.runToken)
     }
 
     fun resume(id: String) {
@@ -403,7 +403,7 @@ object DownloadCoordinator {
             return
         }
         update(id) { it.copy(status = DownloadStatus.DOWNLOADING, speed = "Resuming…", error = "") }
-        signal(id, "CONT")
+        signal(id, "CONT", item.runToken)
     }
 
     fun stop(id: String) {
@@ -660,7 +660,7 @@ object DownloadCoordinator {
                 }
                 if (currentThermalStatus >= THERMAL_STOP_THRESHOLD && thermalDeferred.add(id)) {
                     update(id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Paused automatically because the device was too warm. It will resume after cooling.") }
-                    signal(id, "INT")
+                    signal(id, "INT", runToken)
                 }
                 delay(MONITOR_INTERVAL_MS)
             }
@@ -668,7 +668,7 @@ object DownloadCoordinator {
                 stopReason = "Download stopped at the six-hour safety limit. You can retry it."
             }
             if (stopReason.isNotBlank()) {
-                signal(id, "INT")
+                signal(id, "INT", runToken)
                 if (id !in thermalDeferred) update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = stopReason) }
             }
         } catch (e: Exception) {
@@ -738,14 +738,14 @@ object DownloadCoordinator {
                     break
                 }
                 if (now - lastActivityAt > STALL_TIMEOUT_MS) {
-                    signal(id, "INT")
+                    signal(id, "INT", item.runToken)
                     update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = "Download monitoring detected no activity for 15 minutes. Retry when ready.") }
                     break
                 }
                 delay(MONITOR_INTERVAL_MS)
             }
             if (SystemClock.elapsedRealtime() - startAt >= MAX_DOWNLOAD_RUNTIME_MS) {
-                signal(id, "INT")
+                signal(id, "INT", item.runToken)
                 update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = "Download stopped at the six-hour safety limit.") }
             }
         } finally {
