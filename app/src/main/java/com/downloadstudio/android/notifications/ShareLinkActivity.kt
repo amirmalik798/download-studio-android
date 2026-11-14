@@ -118,6 +118,6 @@ class ShareLinkActivity : ComponentActivity() {
     companion object {
         private const val STATE_ACCEPTED_IDS = "accepted_queue_item_ids"
         private const val MAX_SHARED_LINKS = 10
-        private val URL_PATTERN = Regex("""https?://[^\\s<>"']+""", RegexOption.IGNORE_CASE)
+        private val URL_PATTERN = Regex("""https?://[^\s<>"']+""", RegexOption.IGNORE_CASE)
     }
 }
