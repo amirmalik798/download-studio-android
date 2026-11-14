@@ -963,6 +963,7 @@ private fun EmptyState(title: String, detail: String, icon: androidx.compose.ui.
 private fun SettingsScreen(setupRequired: Boolean = false) {
     val context = LocalContext.current
     var basePath by remember { mutableStateOf(QueueStore.basePath(context).orEmpty()) }
+    var previousBasePath by remember { mutableStateOf(QueueStore.previousDestinationPath(context).orEmpty()) }
     var treeGranted by remember { mutableStateOf(StorageAccess.isDownloadLocationConfigured(context)) }
     var maxConcurrent by remember { mutableIntStateOf(QueueStore.maxConcurrent(context)) }
     var termuxInstalled by remember { mutableStateOf(TermuxBridge.isInstalled(context)) }
@@ -982,6 +983,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
             if (path != null && permissionGranted) {
                 QueueStore.setTree(context, uri.toString(), path)
                 basePath = path
+                previousBasePath = path
                 treeGranted = StorageAccess.isDownloadLocationConfigured(context)
                 DownloadCoordinator.configurationChanged()
                 if (treeGranted) Toast.makeText(context, "Downloads folder saved", Toast.LENGTH_SHORT).show()
@@ -1024,7 +1026,17 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                     Icon(Icons.Default.Folder, tint = Cyan, contentDescription = null)
                     Column(Modifier.weight(1f)) {
                         Text(if (treeGranted) "Downloads folder connected" else "Folder access required", color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        Text(if (basePath.isBlank()) "Select Download/Download Studio, or another writable folder" else basePath, color = TextMuted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            when {
+                                basePath.isNotBlank() -> basePath
+                                previousBasePath.isNotBlank() -> "Re-select previous folder: $previousBasePath"
+                                else -> "Select Download/Download Studio, or another writable folder"
+                            },
+                            color = TextMuted,
+                            fontSize = 10.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
                 Button(onClick = { folderPicker.launch(null) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Panel2)) {
