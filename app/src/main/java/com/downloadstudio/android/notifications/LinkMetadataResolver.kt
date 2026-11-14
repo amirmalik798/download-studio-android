@@ -5,13 +5,17 @@ import android.net.Uri
 import com.downloadstudio.android.engine.DownloadCoordinator
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
-import kotlinx.coroutines.CoroutineScope
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.TimeUnit
 import org.jsoup.Jsoup
 import java.net.InetAddress
 import java.net.URI
@@ -30,7 +34,9 @@ object LinkMetadataResolver {
         val sizeBytes: Long = 0L
     )
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    const val KEY_ITEM_ID = "link_item_id"
+    const val KEY_URL = "link_url"
+    const val KEY_UPDATE_NOTIFICATION = "update_notification"
 
     fun siteName(rawUrl: String): String {
         val host = runCatching {
@@ -50,36 +56,68 @@ object LinkMetadataResolver {
         }
     }
 
+    /**
+     * Schedule a durable one-off lookup. The queue entry is already persisted,
+     * so process death or a temporary loss of connectivity cannot lose acceptance.
+     */
     fun resolve(context: Context, itemId: String, rawUrl: String, updateNotification: Boolean) {
-        val appContext = context.applicationContext
-        scope.launch {
-            val site = siteName(rawUrl)
-            val extracted = resolveWithDownloader(appContext, rawUrl)
-            val page = if (
-                extracted.title.isBlank() || extracted.thumbnailUrl.isBlank() ||
-                extracted.durationSeconds <= 0L || extracted.sizeBytes <= 0L
-            ) resolvePage(rawUrl) else Metadata()
-
-            val merged = Metadata(
-                title = extracted.title.ifBlank { page.title },
-                thumbnailUrl = extracted.thumbnailUrl.ifBlank { page.thumbnailUrl },
-                durationSeconds = extracted.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds,
-                sizeBytes = extracted.sizeBytes.takeIf { it > 0L } ?: page.sizeBytes
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+        val request = OneTimeWorkRequestBuilder<LinkMetadataWorker>()
+            .setInputData(
+                workDataOf(
+                    KEY_ITEM_ID to itemId,
+                    KEY_URL to rawUrl,
+                    KEY_UPDATE_NOTIFICATION to updateNotification
+                )
             )
+            .setConstraints(constraints)
+            .build()
 
-            val updated = DownloadCoordinator.updateLinkMetadata(
-                id = itemId,
-                title = merged.title,
-                thumbnailUrl = merged.thumbnailUrl,
-                durationSeconds = merged.durationSeconds,
-                estimatedSizeBytes = merged.sizeBytes,
-                sourceName = site
-            )
-            if (updated && updateNotification) {
-                LinkStatusNotification.show(appContext, itemId, alert = false)
-            }
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            uniqueWorkName(itemId),
+            ExistingWorkPolicy.KEEP,
+            request
+        )
+    }
+
+    fun cancel(context: Context, itemId: String) {
+        if (itemId.isNotBlank()) {
+            WorkManager.getInstance(context.applicationContext).cancelUniqueWork(uniqueWorkName(itemId))
         }
     }
+
+    suspend fun resolveNow(context: Context, itemId: String, rawUrl: String, updateNotification: Boolean) {
+        val appContext = context.applicationContext
+        val site = siteName(rawUrl)
+        val extracted = resolveWithDownloader(appContext, rawUrl)
+        val page = if (
+            extracted.title.isBlank() || extracted.thumbnailUrl.isBlank() ||
+            extracted.durationSeconds <= 0L || extracted.sizeBytes <= 0L
+        ) resolvePage(rawUrl) else Metadata()
+
+        val merged = Metadata(
+            title = extracted.title.ifBlank { page.title },
+            thumbnailUrl = extracted.thumbnailUrl.ifBlank { page.thumbnailUrl },
+            durationSeconds = extracted.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds,
+            sizeBytes = extracted.sizeBytes.takeIf { it > 0L } ?: page.sizeBytes
+        )
+
+        val updated = DownloadCoordinator.updateLinkMetadata(
+            id = itemId,
+            title = merged.title,
+            thumbnailUrl = merged.thumbnailUrl,
+            durationSeconds = merged.durationSeconds,
+            estimatedSizeBytes = merged.sizeBytes,
+            sourceName = site
+        )
+        if (updated && updateNotification) {
+            LinkStatusNotification.show(appContext, itemId, alert = false)
+        }
+    }
+
+    private fun uniqueWorkName(itemId: String) = "download-studio-link-metadata-$itemId"
 
     private suspend fun resolveWithDownloader(context: Context, rawUrl: String): Metadata {
         if (!StorageAccess.isDownloadLocationConfigured(context) ||
