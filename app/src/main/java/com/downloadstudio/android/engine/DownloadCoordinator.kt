@@ -8,6 +8,7 @@ import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
+import com.downloadstudio.android.notifications.ShareDownloadNotification
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -72,6 +73,7 @@ object DownloadCoordinator {
                 resumeExistingDownloads(_items.value)
                 QueueStore.mirrorBackup(appContext, _items.value, force = true)
             }
+            ShareDownloadNotification.syncQueue(appContext, _items.value)
             if (currentThermalStatus >= THERMAL_STOP_THRESHOLD) pauseActiveForThermal()
             pump()
         }
@@ -160,12 +162,15 @@ object DownloadCoordinator {
         }
     }
 
-    fun enqueue(url: String, mode: DownloadMode, title: String = "") : String {
+    fun enqueue(url: String, mode: DownloadMode, title: String = "", thumbnailUrl: String = "", durationSeconds: Long = 0L, estimatedSizeBytes: Long = 0L) : String {
         val cleaned = url.trim()
         require(cleaned.startsWith("https://") || cleaned.startsWith("http://")) { "Please provide a valid HTTP or HTTPS link." }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val item = DownloadItem(
-            id = id, url = cleaned, title = title.ifBlank { titleFromUrl(cleaned) }, mode = mode
+            id = id, url = cleaned, title = title.ifBlank { titleFromUrl(cleaned) }, mode = mode,
+            thumbnailUrl = thumbnailUrl.takeIf { it.startsWith("https://") || it.startsWith("http://") }.orEmpty(),
+            durationSeconds = durationSeconds.coerceAtLeast(0L),
+            totalSize = estimatedSizeBytes.takeIf { it > 0L }?.let { "≈ " + humanBytes(it) } ?: "—"
         )
         synchronized(stateLock) {
             _items.value = _items.value + item
@@ -562,16 +567,20 @@ object DownloadCoordinator {
     }
 
     private fun update(id: String, transform: (DownloadItem) -> DownloadItem) {
-        synchronized(stateLock) {
+        val snapshot = synchronized(stateLock) {
             _items.value = _items.value.map { if (it.id == id) transform(it) else it }
             QueueStore.save(appContext, _items.value)
+            _items.value.toList()
         }
+        ShareDownloadNotification.syncQueue(appContext, snapshot)
     }
 
     private fun persist() {
-        synchronized(stateLock) {
+        val snapshot = synchronized(stateLock) {
             QueueStore.save(appContext, _items.value)
+            _items.value.toList()
         }
+        ShareDownloadNotification.syncQueue(appContext, snapshot)
     }
 
     private fun humanBytes(value: Long): String {

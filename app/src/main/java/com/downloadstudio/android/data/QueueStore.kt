@@ -104,7 +104,8 @@ object QueueStore {
                         error = o.optString("error", ""),
                         createdAt = o.optLong("createdAt", System.currentTimeMillis()),
                         completedAt = o.optLong("completedAt", 0L),
-                        thumbnailUrl = o.optString("thumbnailUrl", "")
+                        thumbnailUrl = o.optString("thumbnailUrl", ""),
+                        durationSeconds = o.optLong("durationSeconds", 0L).coerceAtLeast(0L)
                     )
                 )
             }
@@ -131,6 +132,7 @@ object QueueStore {
                 put("createdAt", item.createdAt)
                 put("completedAt", item.completedAt)
                 put("thumbnailUrl", item.thumbnailUrl)
+                put("durationSeconds", item.durationSeconds)
             })
         }
     }

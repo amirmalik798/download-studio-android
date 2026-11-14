@@ -68,9 +68,18 @@ object TermuxBridge {
         val temp = "$stateDir/preview-$requestId.tmp"
         val parser = "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); " +
             "clean=lambda v: str(v or '').replace('\\r',' ').replace('\\n',' ').strip(); " +
+            "size=lambda f: int(f.get('filesize') or f.get('filesize_approx') or 0); " +
+            "fm=d.get('formats') or []; " +
+            "vs=[f for f in fm if f.get('vcodec') not in (None,'none')]; " +
+            "vo=[f for f in vs if f.get('acodec') in (None,'none')]; " +
+            "aa=[f for f in fm if f.get('vcodec') in (None,'none') and f.get('acodec') not in (None,'none')]; " +
+            "v=max(vo or vs,key=lambda f:(f.get('height') or 0,f.get('tbr') or 0),default=None); " +
+            "a=max(aa,key=lambda f:(f.get('abr') or f.get('tbr') or 0),default=None); " +
+            "fs=int(d.get('filesize') or d.get('filesize_approx') or 0) or ((size(v) if v else 0)+(size(a) if a and v in vo else 0)); " +
             "print('DS_TITLE:'+clean(d.get('title'))); " +
             "print('DS_THUMBNAIL:'+clean(d.get('thumbnail'))); " +
-            "print('DS_DURATION:'+clean(d.get('duration')))"
+            "print('DS_DURATION:'+clean(d.get('duration'))); " +
+            "print('DS_SIZE:'+clean(fs))"
         return "mkdir -p ${q(stateDir)}; " +
             "rm -f ${q(raw)} ${q(temp)}; printf 'PENDING\\n' > ${q(result)}; " +
             "if timeout 24s yt-dlp --ignore-config --no-warnings --no-playlist --skip-download --dump-single-json " +

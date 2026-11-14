@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.content.Intent
+import android.Manifest
+import android.os.Build
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -13,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -54,6 +57,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import androidx.lifecycle.lifecycleScope
+import com.downloadstudio.android.notifications.ShareDownloadNotification
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import java.net.InetAddress
@@ -78,7 +83,15 @@ class MainActivity : ComponentActivity() {
         window.statusBarColor = android.graphics.Color.rgb(9, 14, 25)
         window.navigationBarColor = android.graphics.Color.rgb(9, 14, 25)
         DownloadCoordinator.initialize(this)
+        ShareDownloadNotification.ensureChannel(this)
+        requestNotificationPermissionIfNeeded()
+        ShareDownloadNotification.syncQueue(this, DownloadCoordinator.items.value)
         handleIncoming(intent)
+        lifecycleScope.launch {
+            DownloadCoordinator.items.collect { queue ->
+                ShareDownloadNotification.syncQueue(applicationContext, queue)
+            }
+        }
         setContent {
             val scheme = darkColorScheme(
                 primary = Blue, secondary = Cyan, tertiary = Violet,
@@ -96,6 +109,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9301)
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -104,16 +123,111 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncoming(intent: Intent?) {
         val raw = when (intent?.action) {
-            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
             Intent.ACTION_VIEW -> intent.dataString
             else -> null
         } ?: return
         val url = extractFirstUrl(raw) ?: return
-        pendingSharedUrl = url
+        val notificationId = ShareDownloadNotification.nextPreviewId()
+        Thread {
+            val metadata = runCatching {
+                if (!isPublicHttpsUrl(url)) PreviewMetadata() else {
+                    val extracted = kotlinx.coroutines.runBlocking { resolveDownloaderPreview(applicationContext, url) }
+                    val page = if (extracted.title.isBlank() || extracted.thumbnailUrl.isBlank() || extracted.durationSeconds <= 0L) resolvePageMetadata(url) else PreviewMetadata()
+                    PreviewMetadata(
+                        title = extracted.title.ifBlank { page.title },
+                        thumbnailUrl = extracted.thumbnailUrl.ifBlank { page.thumbnailUrl },
+                        durationSeconds = extracted.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds,
+                        sizeBytes = extracted.sizeBytes
+                    )
+                }
+            }.getOrDefault(PreviewMetadata())
+            runOnUiThread { if (!isFinishing && !isDestroyed) ShareDownloadNotification.showPreview(this, notificationId, url, metadata.title, metadata.thumbnailUrl, metadata.durationSeconds, metadata.sizeBytes) }
+        }.start()
     }
 
-    companion object {
-        var pendingSharedUrl by mutableStateOf<String?>(null)
+    companion object { }
+}
+
+
+/**
+ * Receives Android Sharesheet links without showing the main Download Studio workspace.
+ * It posts a persistent notification immediately, then enriches it with extractor-confirmed metadata.
+ */
+class ShareLinkActivity : ComponentActivity() {
+    private var handled = false
+
+    private val notificationPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) processSharedLink() else finish()
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        DownloadCoordinator.initialize(applicationContext)
+        ShareDownloadNotification.ensureChannel(applicationContext)
+
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            processSharedLink()
+        }
+    }
+
+    private fun processSharedLink() {
+        if (handled) return
+        handled = true
+        val raw = when (intent?.action) {
+            Intent.ACTION_SEND -> intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            else -> null
+        }.orEmpty()
+        val url = extractFirstUrl(raw)
+        if (url.isNullOrBlank() || !isPublicHttpsUrl(url)) {
+            finish()
+            return
+        }
+
+        val appContext = applicationContext
+        val notificationId = ShareDownloadNotification.nextPreviewId()
+        runCatching {
+            ShareDownloadNotification.showPreview(
+                appContext, notificationId, url, "Checking media details…", "", 0L, 0L
+            )
+        }
+
+        Thread({
+            val metadata = runCatching {
+                val extracted = kotlinx.coroutines.runBlocking {
+                    resolveDownloaderPreview(appContext, url)
+                }
+                val page = if (
+                    extracted.title.isBlank() ||
+                    extracted.thumbnailUrl.isBlank() ||
+                    extracted.durationSeconds <= 0L
+                ) {
+                    resolvePageMetadata(url)
+                } else {
+                    PreviewMetadata()
+                }
+                PreviewMetadata(
+                    title = extracted.title.ifBlank { page.title },
+                    thumbnailUrl = extracted.thumbnailUrl.ifBlank { page.thumbnailUrl },
+                    durationSeconds = extracted.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds,
+                    sizeBytes = extracted.sizeBytes
+                )
+            }.getOrDefault(PreviewMetadata())
+            ShareDownloadNotification.updatePreview(
+                appContext, notificationId, url,
+                metadata.title.ifBlank { "Media link" },
+                metadata.thumbnailUrl,
+                metadata.durationSeconds,
+                metadata.sizeBytes
+            )
+        }, "DownloadStudio-share-preview").start()
+
+        finish()
     }
 }
 
@@ -166,15 +280,6 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
             }
         } else {
             selected = item
-        }
-    }
-    val incoming = MainActivity.pendingSharedUrl
-    LaunchedEffect(incoming) {
-        if (!incoming.isNullOrBlank()) {
-            // Use the existing editable Quick Download field for shared links.
-            url = incoming
-            tab = if (setupReady) AppTab.HOME else AppTab.SETTINGS
-            MainActivity.pendingSharedUrl = null
         }
     }
 
@@ -1341,7 +1446,8 @@ private fun resolvePageThumbnail(rawUrl: String): String? = runCatching {
 private data class PreviewMetadata(
     val title: String = "",
     val thumbnailUrl: String = "",
-    val durationSeconds: Long = 0L
+    val durationSeconds: Long = 0L,
+    val sizeBytes: Long = 0L
 )
 
 private fun mediaSiteName(rawUrl: String): String {
@@ -1373,7 +1479,9 @@ private fun parsePreviewResult(raw: String): PreviewMetadata {
         ?.let(::safePreviewImageUrl).orEmpty()
     val duration = lines.lastOrNull { it.startsWith("DS_DURATION:") }?.substringAfter("DS_DURATION:")?.trim()
         ?.toDoubleOrNull()?.toLong()?.coerceAtLeast(0L) ?: 0L
-    return PreviewMetadata(title = title, thumbnailUrl = thumbnail, durationSeconds = duration)
+    val sizeBytes = lines.lastOrNull { it.startsWith("DS_SIZE:") }?.substringAfter("DS_SIZE:")?.trim()
+        ?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+    return PreviewMetadata(title = title, thumbnailUrl = thumbnail, durationSeconds = duration, sizeBytes = sizeBytes)
 }
 
 /**
