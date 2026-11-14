@@ -13,7 +13,9 @@
         </intent>
     </queries>
     <application
-        android:allowBackup="false"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="Download Studio"
         android:icon="@drawable/ic_download_studio"
         android:roundIcon="@drawable/ic_download_studio"
