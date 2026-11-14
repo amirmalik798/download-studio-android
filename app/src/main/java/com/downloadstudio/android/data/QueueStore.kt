@@ -106,7 +106,10 @@ object QueueStore {
                         completedAt = o.optLong("completedAt", 0L),
                         thumbnailUrl = o.optString("thumbnailUrl", ""),
                         durationSeconds = o.optLong("durationSeconds", 0L).coerceAtLeast(0L),
-                        shareReady = o.optBoolean("shareReady", true)
+                        shareReady = o.optBoolean("shareReady", true),
+                        shareState = runCatching {
+                            o.optString("shareState").takeIf { it.isNotBlank() && it != "null" }?.let(SharedLinkState::valueOf)
+                        }.getOrNull()
                     )
                 )
             }
@@ -135,6 +138,7 @@ object QueueStore {
                 put("thumbnailUrl", item.thumbnailUrl)
                 put("durationSeconds", item.durationSeconds)
                 put("shareReady", item.shareReady)
+                put("shareState", item.shareState?.name ?: JSONObject.NULL)
             })
         }
     }
