@@ -55,8 +55,15 @@ def main() -> int:
     require('getInt(KEY_MAX, 1)' in queue_store and "coerceIn(1, 2)" in queue_store, "Queue concurrency default/range not conservative")
     require("maxConcurrent = 1" in coordinator and "value.coerceIn(1, 2)" in coordinator, "Coordinator concurrency limit missing")
     require("addThermalStatusListener" in coordinator and "THERMAL_STOP_THRESHOLD" in coordinator, "Thermal guard missing")
-    thermal_retry_guard = "thermalDeferred.remove(id)" + chr(10) + "            update(id) { it.copy(status = DownloadStatus.STARTING"
-    require(thermal_retry_guard in coordinator, "Thermal retry marker is not cleared before a new run")
+    require("thermalDeferred.remove(id)" in coordinator and
+            "val runToken = UUID.randomUUID().toString().replace(\"-\", \"\")" in coordinator and
+            "runToken = runToken" in coordinator and
+            "status = DownloadStatus.STARTING" in coordinator,
+            "Thermal retry state and per-attempt token are not initialized before launch")
+    require("runToken: String = \"\"" in item_model and
+            "runToken = o.optString(\"runToken\")" in queue_store and
+            "put(\"runToken\", item.runToken)" in queue_store,
+            "Per-attempt execution tokens are not persisted")
     require("MAX_DOWNLOAD_RUNTIME_MS" in coordinator and "STALL_TIMEOUT_MS" in coordinator and "START_TIMEOUT_MS" in coordinator, "Bounded download monitoring missing")
     require("readStateTail" in coordinator and "fun readStateTail" in storage, "Tail-only log polling missing")
     require("current.status in setOf(DownloadStatus.PAUSED, DownloadStatus.STOPPED, DownloadStatus.QUEUED)) current" in coordinator, "Progress parser status guard is malformed or missing")
@@ -158,6 +165,17 @@ def main() -> int:
     require("kill -CONT" in termux and "kill -$signal" in termux and
             "kill -INT" in termux,
             "Stopping a SIGSTOP-paused Termux process may leave it stuck")
+    require("val executionKey = \"$id-$runToken\"" in coordinator and
+            "DownloadStudioState/$executionKey.log" in coordinator and
+            "DownloadStudioState/$executionKey.pid" in coordinator and
+            "DownloadStudioState/$executionKey.exit" in coordinator,
+            "Download attempt logs, PID and exit markers are not isolated by run token")
+    require("fun signal(id: String, signal: String, runTokenOverride: String? = null)" in coordinator and
+            "signal(id, \"INT\", runToken)" in coordinator and
+            "val runTokens = _items.value.associate { it.id to it.runToken }" in coordinator,
+            "Stop and clear actions are not bound to the matching download attempt")
+    require("runToken = \"\"" in coordinator,
+            "A retried download does not clear the previous execution token")
 
     print("PASS: manifest permissions; foreground dataSync monitor declared; overlay and Usage Access removed")
     print("PASS: Downloads search, status/type/date filters and fixed newest-arrival order")
