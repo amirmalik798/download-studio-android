@@ -108,7 +108,8 @@ object QueueStore {
                         awaitingChoice = o.optBoolean("awaitingChoice", false),
                         sourceName = o.optString("sourceName", ""),
                         durationSeconds = o.optLong("durationSeconds", 0L).coerceAtLeast(0L),
-                        estimatedSizeBytes = o.optLong("estimatedSizeBytes", 0L).coerceAtLeast(0L)
+                        estimatedSizeBytes = o.optLong("estimatedSizeBytes", 0L).coerceAtLeast(0L),
+                        notificationEligible = o.optBoolean("notificationEligible", false)
                     )
                 )
             }
@@ -139,6 +140,7 @@ object QueueStore {
                 put("sourceName", item.sourceName)
                 put("durationSeconds", item.durationSeconds)
                 put("estimatedSizeBytes", item.estimatedSizeBytes)
+                put("notificationEligible", item.notificationEligible)
             })
         }
     }
@@ -168,6 +170,7 @@ object QueueStore {
                 put("sourceName", item.sourceName)
                 put("durationSeconds", item.durationSeconds)
                 put("estimatedSizeBytes", item.estimatedSizeBytes)
+                put("notificationEligible", item.notificationEligible)
             })
         }
     }.toString()
