@@ -120,7 +120,7 @@ object LinkMetadataResolver {
             title = value("DS_TITLE").take(300),
             thumbnailUrl = thumb,
             durationSeconds = value("DS_DURATION").toDoubleOrNull()?.toLong()?.coerceAtLeast(0L) ?: 0L,
-            sizeBytes = value("DS_SIZE").toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+            sizeBytes = value("DS_SIZE").toDoubleOrNull()?.toLong()?.coerceAtLeast(0L) ?: 0L
         )
     }
 
