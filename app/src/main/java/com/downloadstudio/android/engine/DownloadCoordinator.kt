@@ -57,9 +57,9 @@ object DownloadCoordinator {
         maxConcurrent = QueueStore.maxConcurrent(appContext)
         val loaded = QueueStore.load(appContext)
         val recovered = loaded.map { item ->
-            if (item.status == DownloadStatus.PREVIEWING) {
+            if (item.shareState == SharedLinkState.PREVIEWING) {
                 item.copy(
-                    status = DownloadStatus.AWAITING_ACTION,
+                    shareState = SharedLinkState.AWAITING_ACTION,
                     shareReady = false,
                     error = "The media preview was interrupted. Share this link again to refresh its details."
                 )
@@ -188,7 +188,8 @@ object DownloadCoordinator {
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val item = DownloadItem(
             id = id, url = cleaned, title = "Checking media details…",
-            mode = DownloadMode.CHOOSE, status = DownloadStatus.PREVIEWING, shareReady = false
+            mode = DownloadMode.VIDEO, status = DownloadStatus.QUEUED,
+            shareReady = false, shareState = SharedLinkState.PREVIEWING
         )
         val snapshot = synchronized(stateLock) {
             _items.value = _items.value + item
@@ -204,9 +205,9 @@ object DownloadCoordinator {
         estimatedSizeBytes: Long, shareReady: Boolean, error: String = ""
     ) {
         update(id) { current ->
-            if (current.status != DownloadStatus.PREVIEWING) current
+            if (current.shareState != SharedLinkState.PREVIEWING) current
             else current.copy(
-                status = DownloadStatus.AWAITING_ACTION,
+                shareState = SharedLinkState.AWAITING_ACTION,
                 title = title.ifBlank { "Shared media link" },
                 thumbnailUrl = thumbnailUrl.takeIf {
                     it.startsWith("https://", true) || it.startsWith("http://", true)
@@ -221,13 +222,12 @@ object DownloadCoordinator {
 
     /** Select a format on the shared-link record; do not create a duplicate queue row. */
     fun startSharedDownload(id: String, mode: DownloadMode): Boolean {
-        if (mode == DownloadMode.CHOOSE) return false
         val current = _items.value.firstOrNull { it.id == id } ?: return false
-        if (current.status != DownloadStatus.AWAITING_ACTION || !current.shareReady) return false
+        if (current.shareState != SharedLinkState.AWAITING_ACTION || !current.shareReady) return false
         update(id) { item ->
-            if (item.status != DownloadStatus.AWAITING_ACTION || !item.shareReady) item
+            if (item.shareState != SharedLinkState.AWAITING_ACTION || !item.shareReady) item
             else item.copy(
-                mode = mode, status = DownloadStatus.QUEUED, shareReady = false,
+                mode = mode, status = DownloadStatus.QUEUED, shareReady = false, shareState = null,
                 progress = 0f, speed = "—", eta = "—", downloaded = "—", error = ""
             )
         }
@@ -242,7 +242,6 @@ object DownloadCoordinator {
 
     fun enqueue(url: String, mode: DownloadMode, title: String = "", thumbnailUrl: String = "", durationSeconds: Long = 0L, estimatedSizeBytes: Long = 0L) : String {
         val cleaned = url.trim()
-        require(mode != DownloadMode.CHOOSE) { "Choose video or audio before starting a download." }
         require(cleaned.startsWith("https://") || cleaned.startsWith("http://")) { "Please provide a valid HTTP or HTTPS link." }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val item = DownloadItem(
@@ -384,7 +383,9 @@ object DownloadCoordinator {
         scope.launch {
             mutex.withLock {
                 while (!bulkClearing && active.size < maxConcurrent && currentThermalStatus < THERMAL_DEFER_THRESHOLD) {
-                    val next = _items.value.firstOrNull { it.status == DownloadStatus.QUEUED && it.id !in active.keys } ?: break
+                    val next = _items.value.firstOrNull {
+                        it.status == DownloadStatus.QUEUED && it.shareState == null && it.id !in active.keys
+                    } ?: break
                     val worker = scope.launch(start = CoroutineStart.LAZY) { runJob(next) }
                     active[next.id] = worker
                     worker.start()
