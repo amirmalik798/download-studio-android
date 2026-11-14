@@ -555,7 +555,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
 private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest: (() -> Unit)? = null) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val color = when (item.status) {
+    val color = if (item.awaitingChoice) Violet else when (item.status) {
         DownloadStatus.COMPLETED -> Green
         DownloadStatus.FAILED -> Red
         DownloadStatus.PAUSED -> Violet
@@ -589,7 +589,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     }
                 }
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
-                    Text(friendlyStatus(item.status), color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text(if (item.awaitingChoice) "CHOOSE FORMAT" else friendlyStatus(item.status), color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 }
                 var actionsExpanded by remember(item.id) { mutableStateOf(false) }
                 Box {
@@ -656,7 +656,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     }
                 }
             }
-            if (item.awaitingChoice) {
+            if (item.awaitingChoice && onRemoveRequest != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
@@ -741,7 +741,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                 else -> {
                     if (item.error.isNotBlank()) {
                         Text(friendlyError(item.error), color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    } else {
+                    } else if (!item.awaitingChoice) {
                         Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3", color = TextMuted, fontSize = 10.sp)
                     }
                 }
