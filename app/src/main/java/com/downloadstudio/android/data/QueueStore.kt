@@ -225,8 +225,8 @@ object QueueStore {
                 }
             }
 
-            if (changed) editor.commit()
-            if (old.contains(LEGACY_KEY_QUEUE) || old.contains(LEGACY_KEY_MAX)) {
+            val migrationSaved = !changed || editor.commit()
+            if (migrationSaved && (old.contains(LEGACY_KEY_QUEUE) || old.contains(LEGACY_KEY_MAX))) {
                 old.edit().remove(LEGACY_KEY_QUEUE).remove(LEGACY_KEY_MAX).apply()
             }
         }
