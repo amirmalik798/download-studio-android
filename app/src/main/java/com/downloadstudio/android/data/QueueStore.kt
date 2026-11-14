@@ -200,7 +200,7 @@ object QueueStore {
             ?: return false
         val output = context.contentResolver.openOutputStream(backup.uri, "wt") ?: return false
         output.bufferedWriter(Charsets.UTF_8).use { it.write(raw) }
-        true
+        return true
     }
 
     private fun migrateLegacyPreferences(context: Context) {
