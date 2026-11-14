@@ -446,7 +446,7 @@ object DownloadCoordinator {
 
     fun remove(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
-        if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)) {
+        if (id in active.keys || item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)) {
             stop(id)
         }
         synchronized(stateLock) {
