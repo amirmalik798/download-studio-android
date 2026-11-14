@@ -181,7 +181,7 @@ object DownloadCoordinator {
      * Add a link to the persistent queue without starting the download.
      * A user must explicitly choose video or audio from the queue row.
      */
-    fun enqueueForChoice(url: String, preferredMode: DownloadMode = DownloadMode.VIDEO): String {
+    fun enqueueForChoice(url: String, preferredMode: DownloadMode = DownloadMode.VIDEO, notificationEligible: Boolean = false): String {
         val cleaned = url.trim()
         val uri = android.net.Uri.parse(cleaned)
         require((uri.scheme == "https" || uri.scheme == "http") && !uri.host.isNullOrBlank() && uri.userInfo == null) {
@@ -195,7 +195,8 @@ object DownloadCoordinator {
             title = titleFromUrl(cleaned),
             mode = preferredMode,
             awaitingChoice = true,
-            sourceName = sourceNameFromUrl(cleaned)
+            sourceName = sourceNameFromUrl(cleaned),
+            notificationEligible = notificationEligible
         )
         synchronized(stateLock) {
             _items.value = _items.value + item
