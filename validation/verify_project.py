@@ -145,7 +145,7 @@ def main() -> int:
     require("active.putIfAbsent(item.id, monitor)" in coordinator,
             "Concurrent recovery can register duplicate download monitors")
     require("val beforeLaunch" in coordinator and "val afterLaunch" in coordinator and
-            "signal(id, \"INT\")" in coordinator,
+            "signal(id, \"INT\", runToken)" in coordinator,
             "A removed queue row can still launch an orphan Termux download")
     require("id in active.keys || item.status" in coordinator,
             "Removing an item does not cancel a pending queue worker")
