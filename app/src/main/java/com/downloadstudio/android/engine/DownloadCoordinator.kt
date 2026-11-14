@@ -10,6 +10,7 @@ import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.util.StorageAccess
 import com.downloadstudio.android.notifications.LinkStatusNotification
+import com.downloadstudio.android.notifications.LinkMetadataResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineStart
@@ -251,6 +252,7 @@ object DownloadCoordinator {
             chosen = true
         }
         if (chosen) {
+            LinkMetadataResolver.cancel(appContext, id)
             LinkStatusNotification.cancel(appContext, id)
             pump()
         }
@@ -341,6 +343,7 @@ object DownloadCoordinator {
             _items.value = _items.value.filterNot { it.id == id }
             QueueStore.save(appContext, _items.value)
         }
+        LinkMetadataResolver.cancel(appContext, id)
         LinkStatusNotification.cancel(appContext, id)
     }
 
@@ -369,7 +372,10 @@ object DownloadCoordinator {
             QueueStore.save(appContext, emptyList())
             ids to notificationIds
         }
-        idsToClear.second.forEach { LinkStatusNotification.cancel(appContext, it) }
+        idsToClear.second.forEach {
+            LinkMetadataResolver.cancel(appContext, it)
+            LinkStatusNotification.cancel(appContext, it)
+        }
         val idsToStop = idsToClear.first
 
         idsToStop.forEach { id ->
