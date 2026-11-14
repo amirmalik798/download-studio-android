@@ -61,8 +61,9 @@ object DownloadCoordinator {
             if (item.shareState == SharedLinkState.PREVIEWING) {
                 item.copy(
                     shareState = SharedLinkState.AWAITING_ACTION,
-                    shareReady = false,
-                    error = "The media preview was interrupted. Share this link again to refresh its details."
+                    shareReady = true,
+                    title = item.title.ifBlank { titleFromUrl(item.url) },
+                    error = "Some preview details may be unavailable. You can still download this link."
                 )
             } else item
         }
@@ -188,9 +189,9 @@ object DownloadCoordinator {
         }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val item = DownloadItem(
-            id = id, url = cleaned, title = "Checking media details…",
+            id = id, url = cleaned, title = titleFromUrl(cleaned),
             mode = DownloadMode.VIDEO, status = DownloadStatus.QUEUED,
-            shareReady = false, shareState = SharedLinkState.PREVIEWING
+            shareReady = true, shareState = SharedLinkState.AWAITING_ACTION
         )
         val snapshot = synchronized(stateLock) {
             _items.value = _items.value + item
@@ -206,7 +207,7 @@ object DownloadCoordinator {
         estimatedSizeBytes: Long, shareReady: Boolean, error: String = ""
     ) {
         update(id) { current ->
-            if (current.shareState != SharedLinkState.PREVIEWING) current
+            if (current.shareState !in setOf(SharedLinkState.PREVIEWING, SharedLinkState.AWAITING_ACTION)) current
             else current.copy(
                 shareState = SharedLinkState.AWAITING_ACTION,
                 title = title.ifBlank { "Shared media link" },
