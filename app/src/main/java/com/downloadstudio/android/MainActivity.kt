@@ -192,7 +192,6 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
             }.getOrDefault(DownloadMode.VIDEO)
         )
     }
-    var selected by remember { mutableStateOf<DownloadItem?>(null) }
     var setupReady by remember {
         mutableStateOf(StorageAccess.isDownloadLocationConfigured(context) &&
             TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context))
@@ -219,8 +218,6 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
                 runCatching { context.startActivity(openIntent) }
                     .onFailure { Toast.makeText(context, "No compatible app is available to open this file.", Toast.LENGTH_LONG).show() }
             }
-        } else {
-            selected = item
         }
     }
     val incoming = MainActivity.pendingSharedUrl
@@ -277,10 +274,6 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
                 AppTab.SETTINGS -> SettingsScreen(setupRequired = !setupReady)
             }
         }
-    }
-
-    selected?.let { item ->
-        DownloadDetailsDialog(item, onDismiss = { selected = null })
     }
 
     pendingFolderManagerTargets?.let { targets ->
@@ -934,6 +927,46 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                                 }
                             )
                         }
+                        if (item.status == DownloadStatus.STARTING || item.status == DownloadStatus.DOWNLOADING) {
+                            DropdownMenuItem(
+                                text = { Text("Pause download", color = TextMain, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.Pause, null, tint = Cyan) },
+                                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
+                                onClick = {
+                                    actionsExpanded = false
+                                    DownloadCoordinator.pause(item.id)
+                                }
+                            )
+                        }
+                        if (item.status == DownloadStatus.PAUSED) {
+                            DropdownMenuItem(
+                                text = { Text("Resume download", color = TextMain, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.PlayArrow, null, tint = Green) },
+                                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
+                                onClick = {
+                                    actionsExpanded = false
+                                    DownloadCoordinator.resume(item.id)
+                                }
+                            )
+                        }
+                        if (item.status in setOf(
+                                DownloadStatus.QUEUED,
+                                DownloadStatus.STARTING,
+                                DownloadStatus.DOWNLOADING,
+                                DownloadStatus.PAUSED,
+                                DownloadStatus.PROCESSING
+                            )
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Stop download", color = Red, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.Stop, null, tint = Red) },
+                                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
+                                onClick = {
+                                    actionsExpanded = false
+                                    DownloadCoordinator.stop(item.id)
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Copy source link", color = TextMain, fontSize = 13.sp) },
                             leadingIcon = { Icon(Icons.Default.ContentCopy, null, tint = Cyan) },
@@ -1584,54 +1617,6 @@ private fun StatusLine(title: String, good: Boolean, detail: String) {
         Text(detail, color = if (good) Green else TextMuted, fontSize = 9.sp)
     }
 }
-
-@Composable
-private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Panel,
-        title = { Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DetailLine("Type", if (item.awaitingChoice) "Media link · choose video or audio" else if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3")
-                DetailLine("Status", if (item.awaitingChoice) "Awaiting format choice" else friendlyStatus(item.status))
-                if (item.sourceName.isNotBlank()) DetailLine("Source website", item.sourceName)
-                if (item.durationSeconds > 0L) DetailLine("Length", formatPreviewDuration(item.durationSeconds))
-                if (item.estimatedSizeBytes > 0L) DetailLine("Estimated size", formatBytesLabel(item.estimatedSizeBytes))
-                DetailLine("Download date", formatDownloadDate(item))
-                DetailLine("Progress", "${(item.progress * 100).toInt()}%")
-                DetailLine("Downloaded", item.downloaded)
-                DetailLine("Total size", item.totalSize)
-                DetailLine("Speed", item.speed)
-                DetailLine("ETA", item.eta)
-                if (item.status == DownloadStatus.PROCESSING) {
-                    DetailLine("Processing stage", item.processingStage.ifBlank { "Finalizing media" })
-                }
-                DetailLine("Source", item.url)
-                if (item.outputPath.isNotBlank()) DetailLine("Saved file", item.outputPath)
-                if (item.error.isNotBlank()) Text(friendlyError(item.error), color = Red, fontSize = 11.sp)
-            }
-        },
-        confirmButton = {
-            Row {
-                if (item.status == DownloadStatus.DOWNLOADING) TextButton(onClick = { DownloadCoordinator.pause(item.id); onDismiss() }) { Text("Pause") }
-                if (item.status == DownloadStatus.PAUSED) TextButton(onClick = { DownloadCoordinator.resume(item.id); onDismiss() }) { Text("Resume") }
-                if (!item.awaitingChoice && item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)) TextButton(onClick = { DownloadCoordinator.stop(item.id); onDismiss() }) { Text("Stop", color = Red) }
-                TextButton(onClick = onDismiss) { Text("Close") }
-            }
-        }
-    )
-}
-
-@Composable
-private fun DetailLine(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(label.uppercase(), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-        Text(value, color = TextMain, fontSize = 11.sp)
-    }
-}
-
 
 private fun extractFirstUrl(raw: String): String? =
     Regex("https?://[^\\s<>\\\"]+", RegexOption.IGNORE_CASE)
