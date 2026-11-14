@@ -176,6 +176,15 @@ def main() -> int:
             "Stop and clear actions are not bound to the matching download attempt")
     require("runToken = \"\"" in coordinator,
             "A retried download does not clear the previous execution token")
+    require("update(id, durable = true)" in coordinator and
+            "QueueStore.save(appContext, _items.value, durable = durable)" in coordinator,
+            "The execution token is not durably committed before starting Termux")
+    run_job = coordinator[coordinator.index("private suspend fun runJob"):coordinator.index("private suspend fun monitorExisting")]
+    recovery_monitor = coordinator[coordinator.index("private suspend fun monitorExisting"):coordinator.index("private fun parseProgress")]
+    require("signal(id, \"INT\", runToken)" in run_job and "signal(id, \"STOP\", runToken)" in run_job and
+            "signal(id, \"INT\", item.runToken)" in recovery_monitor,
+            "Termination signals are not scoped to the exact download attempt")
+
 
     print("PASS: manifest permissions; foreground dataSync monitor declared; overlay and Usage Access removed")
     print("PASS: Downloads search, status/type/date filters and fixed newest-arrival order")
