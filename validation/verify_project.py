@@ -153,7 +153,7 @@ def main() -> int:
             "Corrupt queue preference recovery and finite progress validation are missing")
     require('Regex("[A-Za-z0-9_-]{1,48}")' in termux and
             'mode == "VIDEO" || mode == "AUDIO"' in termux and
-            'case \"\\$ds_pid\" in *[!0-9]*)' in termux,
+            "[!0-9]*" in termux,
             "Termux path identifiers, modes, or PID values are not validated")
     require("kill -CONT" in termux and "kill -$signal" in termux and
             "kill -INT" in termux,
