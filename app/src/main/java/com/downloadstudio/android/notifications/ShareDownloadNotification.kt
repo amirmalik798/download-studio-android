@@ -1,301 +1,298 @@
 package com.downloadstudio.android.notifications
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
+import android.util.Log
+import android.util.LruCache
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.downloadstudio.android.MainActivity
 import com.downloadstudio.android.R
 import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
+import com.downloadstudio.android.data.SharedLinkState
 import com.downloadstudio.android.engine.DownloadCoordinator
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicInteger
 
+/**
+ * System notifications are a projection of the persisted DownloadCoordinator queue.
+ * This object never stores a second copy of queue status, link payload, progress,
+ * or dismissal state. Every action resolves the latest queue item by its ID.
+ */
 object ShareDownloadNotification {
+    private const val TAG = "DownloadStudioNotif"
     private const val CHANNEL_ID = "shared_media_downloads"
-    private const val PREFIX = "com.downloadstudio.android.notification."
-    private const val EXTRA_URL = "share_url"
-    private const val EXTRA_TITLE = "share_title"
-    private const val EXTRA_THUMBNAIL = "share_thumbnail"
-    private const val EXTRA_DURATION = "share_duration"
-    private const val EXTRA_SIZE_BYTES = "share_size_bytes"
+    private const val ACTION_PREFIX = "com.downloadstudio.android.notification."
     private const val EXTRA_ITEM_ID = "download_item_id"
-    private const val EXTRA_NOTIFICATION_ID = "notification_id"
-    private const val ACTIVE_ID_BASE = 73000
-    private val ids = AtomicInteger(72000 + (System.currentTimeMillis() % 90000L).toInt())
+    private const val NOTIFICATION_TAG_PREFIX = "download-studio:queue:"
+    private const val NOTIFICATION_ID = 1
+
     private val executor = Executors.newFixedThreadPool(2)
-    private val snapshots = ConcurrentHashMap<String, String>()
-    private val dismissedTracking = ConcurrentHashMap.newKeySet<String>()
+    private val bitmapCache = LruCache<String, Bitmap>(12)
+    private val thumbnailRequests = ConcurrentHashMap.newKeySet<String>()
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= 26) {
             val manager = context.getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Shared media downloads", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Shared link previews and download controls"
-            })
-        }
-    }
-
-    fun nextPreviewId(): Int = ids.incrementAndGet()
-
-    fun showPreview(context: Context, id: Int, url: String, title: String, thumbnail: String, duration: Long, sizeBytes: Long = 0L) {
-        ensureChannel(context)
-        val safeTitle = title.ifBlank { "Media link" }
-        val safeThumbnail = thumbnail.takeIf { it.startsWith("https://") || it.startsWith("http://") }.orEmpty()
-        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_download_studio)
-            .setContentTitle(safeTitle)
-            .setContentText(previewSummary(duration, sizeBytes))
-            .setAutoCancel(false).setOngoing(true).setOnlyAlertOnce(true)
-            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
-            .setContentIntent(openApp(context))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(previewSummary(duration, sizeBytes) + "\n" + url.take(180)))
-            .addAction(action(context, id, PREFIX + "VIDEO", "Download video", url, safeTitle, safeThumbnail, duration, sizeBytes))
-            .addAction(action(context, id, PREFIX + "AUDIO", "Download audio", url, safeTitle, safeThumbnail, duration, sizeBytes))
-            .addAction(action(context, id, PREFIX + "DISCARD", "Discard", url, safeTitle, safeThumbnail, duration, sizeBytes))
-        NotificationManagerCompat.from(context).notify(id, builder.build())
-        if (safeThumbnail.isNotBlank()) executor.execute {
-            val bitmap = loadBitmap(safeThumbnail) ?: return@execute
-            if (NotificationManagerCompat.from(context).activeNotifications.none { it.id == id }) return@execute
-            val updated = NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_download_studio).setContentTitle(safeTitle)
-                .setContentText(previewSummary(duration, sizeBytes))
-                .setContentIntent(openApp(context))
-                .setLargeIcon(bitmap).setStyle(NotificationCompat.BigPictureStyle().bigPicture(bitmap).bigLargeIcon(null as Bitmap?))
-                .setAutoCancel(false).setOngoing(true).setOnlyAlertOnce(true)
-                .addAction(action(context, id, PREFIX + "VIDEO", "Download video", url, safeTitle, safeThumbnail, duration, sizeBytes))
-                .addAction(action(context, id, PREFIX + "AUDIO", "Download audio", url, safeTitle, safeThumbnail, duration, sizeBytes))
-                .addAction(action(context, id, PREFIX + "DISCARD", "Discard", url, safeTitle, safeThumbnail, duration, sizeBytes))
-                .build()
-            NotificationManagerCompat.from(context).notify(id, updated)
-        }
-    }
-
-    private fun action(context: Context, id: Int, type: String, label: String, url: String, title: String, thumbnail: String, duration: Long, sizeBytes: Long): NotificationCompat.Action {
-        val intent = Intent(context, ShareDownloadActionReceiver::class.java).apply {
-            action = type; putExtra(EXTRA_URL, url); putExtra(EXTRA_TITLE, title)
-            putExtra(EXTRA_THUMBNAIL, thumbnail); putExtra(EXTRA_DURATION, duration); putExtra(EXTRA_SIZE_BYTES, sizeBytes); putExtra(EXTRA_NOTIFICATION_ID, id)
-        }
-        val pending = PendingIntent.getBroadcast(context, id + type.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val icon = when (type) {
-            PREFIX + "VIDEO" -> R.drawable.ic_action_video
-            PREFIX + "AUDIO" -> R.drawable.ic_action_audio
-            else -> R.drawable.ic_action_discard
-        }
-        return NotificationCompat.Action.Builder(icon, label, pending).build()
-    }
-
-    fun updatePreview(context: Context, id: Int, url: String, title: String, thumbnail: String, duration: Long, sizeBytes: Long) {
-        if (NotificationManagerCompat.from(context).activeNotifications.none { it.id == id }) return
-        showPreview(context, id, url, title, thumbnail, duration, sizeBytes)
-    }
-
-    fun startDownload(context: Context, intent: Intent) {
-        DownloadCoordinator.initialize(context.applicationContext)
-        val url = intent.getStringExtra(EXTRA_URL).orEmpty()
-        val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
-        val thumbnail = intent.getStringExtra(EXTRA_THUMBNAIL).orEmpty()
-        val duration = intent.getLongExtra(EXTRA_DURATION, 0L)
-        val sizeBytes = intent.getLongExtra(EXTRA_SIZE_BYTES, 0L)
-        val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, 0)
-        val mode = if (intent.action == PREFIX + "AUDIO") DownloadMode.AUDIO else DownloadMode.VIDEO
-        runCatching {
-            val confirmedTitle = title.takeUnless { it == "Checking media details…" }.orEmpty()
-            val id = DownloadCoordinator.enqueue(url, mode, confirmedTitle, thumbnail, duration, sizeBytes)
-            NotificationManagerCompat.from(context).cancel(notificationId)
-            showTrackingForItem(context, id)
-        }.onFailure { showError(context, notificationId, title, it.message ?: "Unable to start download") }
-    }
-
-    fun discard(context: Context, intent: Intent) {
-        intent.getStringExtra(EXTRA_ITEM_ID)?.let { dismissedTracking.add(it) }
-        NotificationManagerCompat.from(context).cancel(intent.getIntExtra(EXTRA_NOTIFICATION_ID, 0))
-    }
-
-    fun syncQueue(context: Context, items: List<DownloadItem>) {
-        val byId = items.associateBy { it.id }
-        snapshots.keys.toList().forEach { id ->
-            val item = byId[id]
-            if (item == null) {
-                snapshots.remove(id)
-                dismissedTracking.remove(id)
-                NotificationManagerCompat.from(context).cancel(activeId(id))
-            } else {
-                showTrackingForItem(context, id, item)
-            }
-        }
-        items.filter {
-            it.status in setOf(DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)
-        }.forEach { showTrackingForItem(context, it.id, it) }
-    }
-
-    fun showTrackingForItem(context: Context, id: String, known: DownloadItem? = null) {
-        val item = known ?: DownloadCoordinator.items.value.firstOrNull { it.id == id } ?: return
-        if (id in dismissedTracking) return
-        val signature = trackingSignature(item)
-        if (snapshots.put(id, signature) == signature) return
-
-        val notificationId = activeId(id)
-        NotificationManagerCompat.from(context).notify(
-            notificationId,
-            trackingBuilder(context, id, item, notificationId, null).build()
-        )
-
-        if (item.thumbnailUrl.isNotBlank()) executor.execute {
-            val bitmap = loadBitmap(item.thumbnailUrl) ?: return@execute
-            val current = DownloadCoordinator.items.value.firstOrNull { it.id == id } ?: return@execute
-            if (id in dismissedTracking || snapshots[id] != trackingSignature(current)) return@execute
-            NotificationManagerCompat.from(context).notify(
-                notificationId,
-                trackingBuilder(context, id, current, notificationId, bitmap).build()
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    "Shared media downloads",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Shared link previews and live download controls"
+                    setShowBadge(true)
+                }
             )
         }
     }
 
-    private fun trackingSignature(item: DownloadItem): String =
-        listOf(
-            item.status.name, item.progress.toInt(), item.speed, item.eta,
-            item.downloaded, item.totalSize, item.processingStage, item.title
-        ).joinToString("|")
+    fun canPostNotifications(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return false
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
+        if (Build.VERSION.SDK_INT >= 26) {
+            val channel = context.getSystemService(NotificationManager::class.java).getNotificationChannel(CHANNEL_ID)
+            if (channel == null || channel.importance == NotificationManager.IMPORTANCE_NONE) return false
+        }
+        return true
+    }
 
-    private fun trackingBuilder(
+    /**
+     * Reconcile the full system-notification set against one immutable queue snapshot.
+     * Stable notification tags ensure one queue item owns one system notification.
+     */
+    fun syncQueue(context: Context, items: List<DownloadItem>) {
+        ensureChannel(context)
+        val expectedTags = items.mapTo(HashSet()) { notificationTag(it.id) }
+        items.forEach { item -> publishItem(context.applicationContext, item) }
+
+        runCatching {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager.activeNotifications
+                .filter { it.tag?.startsWith(NOTIFICATION_TAG_PREFIX) == true && it.tag !in expectedTags }
+                .forEach { manager.cancel(it.tag, it.id) }
+        }.onFailure { Log.w(TAG, "Unable to reconcile removed queue notifications", it) }
+    }
+
+    private fun publishItem(context: Context, item: DownloadItem) {
+        val cachedThumbnail = item.thumbnailUrl.takeIf { it.isNotBlank() }?.let(bitmapCache::get)
+        post(context, item, cachedThumbnail)
+
+        val thumbnailUrl = item.thumbnailUrl
+        if (thumbnailUrl.isBlank() || cachedThumbnail != null || !thumbnailRequests.add(thumbnailUrl)) return
+        executor.execute {
+            try {
+                val bitmap = loadBitmap(thumbnailUrl) ?: return@execute
+                bitmapCache.put(thumbnailUrl, bitmap)
+                val current = DownloadCoordinator.items.value.firstOrNull { it.id == item.id } ?: return@execute
+                if (current.thumbnailUrl == thumbnailUrl) post(context, current, bitmap)
+            } finally {
+                thumbnailRequests.remove(thumbnailUrl)
+            }
+        }
+    }
+
+    private fun post(context: Context, item: DownloadItem, thumbnail: Bitmap?) {
+        val notification = buildNotification(context, item, thumbnail).build()
+        runCatching {
+            NotificationManagerCompat.from(context).notify(notificationTag(item.id), NOTIFICATION_ID, notification)
+        }.onFailure {
+            Log.e(TAG, "Unable to post queue notification for ${item.id}", it)
+        }
+    }
+
+    private fun buildNotification(
         context: Context,
-        id: String,
         item: DownloadItem,
-        notificationId: Int,
         thumbnail: Bitmap?
     ): NotificationCompat.Builder {
-        val active = item.status in setOf(
-            DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING,
-            DownloadStatus.PAUSED, DownloadStatus.PROCESSING
-        )
-        val statusText = when (item.status) {
-            DownloadStatus.QUEUED -> "Waiting in queue"
-            DownloadStatus.STARTING -> "Starting"
-            DownloadStatus.DOWNLOADING -> "Downloading · " + item.progress.toInt() + "%"
-            DownloadStatus.PAUSED -> "Paused · " + item.progress.toInt() + "%"
-            DownloadStatus.PROCESSING -> item.processingStage.ifBlank { "Processing media" }
-            DownloadStatus.COMPLETED -> "Download completed"
-            DownloadStatus.FAILED -> "Download failed"
-            DownloadStatus.STOPPED -> "Download stopped"
-        }
-        val details = buildList {
-            add(statusText)
-            if (item.durationSeconds > 0L) add("Duration: " + formatDuration(item.durationSeconds))
-            if (item.totalSize != "—") add("Size: " + item.totalSize)
-            if (item.downloaded != "—") add("Downloaded: " + item.downloaded)
-            if (item.speed != "—") add(item.speed)
-            if (item.eta != "—") add("ETA " + item.eta)
-            if (item.error.isNotBlank()) add(item.error)
-        }
-
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_download_studio)
             .setContentTitle(item.title.ifBlank { "Media download" })
-            .setContentText(statusText)
             .setContentIntent(openApp(context))
             .setAutoCancel(false)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setProgress(100, (item.progress * 100).toInt().coerceIn(0, 100), item.status == DownloadStatus.PROCESSING)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
 
         if (thumbnail != null) {
             builder.setLargeIcon(thumbnail)
-                .setStyle(
-                    NotificationCompat.BigPictureStyle()
-                        .bigPicture(thumbnail)
-                        .bigLargeIcon(null as Bitmap?)
-                        .setSummaryText(details.joinToString(" · "))
-                )
-        } else {
-            builder.setStyle(NotificationCompat.BigTextStyle().bigText(details.joinToString(" · ")))
+                .setStyle(NotificationCompat.BigPictureStyle().bigPicture(thumbnail).bigLargeIcon(null as Bitmap?))
         }
 
-        if (item.status == DownloadStatus.PAUSED) {
-            builder.addAction(R.drawable.ic_action_resume, "Resume", control(context, id, PREFIX + "RESUME"))
+        when (item.shareState) {
+            SharedLinkState.PREVIEWING -> {
+                builder.setContentText("Checking shared link…")
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(
+                        "Checking the shared link. The notification will update with the media details."
+                    ))
+                    .addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+            }
+            SharedLinkState.AWAITING_ACTION -> {
+                val heading = if (item.shareReady) "Choose video or audio to download" else "Shared link needs attention"
+                val details = buildString {
+                    append(heading)
+                    if (item.durationSeconds > 0L) append("\nDuration: ").append(formatDuration(item.durationSeconds))
+                    else append("\nDuration: unavailable")
+                    if (item.totalSize != "—") append("\nSize: ").append(item.totalSize)
+                    else append("\nSize: unavailable")
+                    if (item.error.isNotBlank()) append("\n").append(item.error)
+                }
+                builder.setContentText(heading)
+                if (thumbnail == null) builder.setStyle(NotificationCompat.BigTextStyle().bigText(details))
+                if (item.shareReady) {
+                    builder.addAction(action(context, item.id, ACTION_PREFIX + "VIDEO", R.drawable.ic_action_video, "Download video"))
+                    builder.addAction(action(context, item.id, ACTION_PREFIX + "AUDIO", R.drawable.ic_action_audio, "Download audio"))
+                }
+                builder.addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+            }
+            null -> when (item.status) {
+                DownloadStatus.QUEUED -> {
+                    builder.setContentText("Waiting in download queue")
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(downloadDetails(item, "Waiting in download queue")))
+                        .setProgress(100, 0, true)
+                        .addAction(action(context, item.id, ACTION_PREFIX + "STOP", R.drawable.ic_action_stop, "Stop"))
+                        .addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+                }
+                DownloadStatus.STARTING -> {
+                    builder.setContentText("Starting download…")
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(downloadDetails(item, "Starting download…")))
+                        .setProgress(100, item.progressPercent(), true)
+                        .addAction(action(context, item.id, ACTION_PREFIX + "STOP", R.drawable.ic_action_stop, "Stop"))
+                        .addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+                }
+                DownloadStatus.DOWNLOADING -> {
+                    val state = "Downloading · ${item.progressPercent()}%"
+                    builder.setContentText(state)
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(downloadDetails(item, state)))
+                        .setProgress(100, item.progressPercent(), false)
+                        .addAction(action(context, item.id, ACTION_PREFIX + "PAUSE", R.drawable.ic_action_pause, "Pause"))
+                        .addAction(action(context, item.id, ACTION_PREFIX + "STOP", R.drawable.ic_action_stop, "Stop"))
+                        .addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+                }
+                DownloadStatus.PAUSED -> {
+                    val state = "Paused · ${item.progressPercent()}%"
+                    builder.setContentText(state)
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(downloadDetails(item, state)))
+                        .setProgress(100, item.progressPercent(), false)
+                        .addAction(action(context, item.id, ACTION_PREFIX + "RESUME", R.drawable.ic_action_resume, "Resume"))
+                        .addAction(action(context, item.id, ACTION_PREFIX + "STOP", R.drawable.ic_action_stop, "Stop"))
+                        .addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+                }
+                DownloadStatus.PROCESSING -> {
+                    val state = item.processingStage.ifBlank { "Processing media…" }
+                    builder.setContentText(state)
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(downloadDetails(item, state)))
+                        .setProgress(100, item.progressPercent(), true)
+                        .addAction(action(context, item.id, ACTION_PREFIX + "STOP", R.drawable.ic_action_stop, "Stop"))
+                        .addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+                }
+                DownloadStatus.COMPLETED -> {
+                    builder.setContentText("Download completed")
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(downloadDetails(item, "Download completed")))
+                        .setProgress(100, 100, false)
+                        .addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+                }
+                DownloadStatus.FAILED -> {
+                    builder.setContentText("Download failed")
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(downloadDetails(item, "Download failed")))
+                        .setProgress(0, 0, false)
+                        .addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+                }
+                DownloadStatus.STOPPED -> {
+                    builder.setContentText("Download stopped")
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(downloadDetails(item, "Download stopped")))
+                        .setProgress(0, 0, false)
+                        .addAction(action(context, item.id, ACTION_PREFIX + "DISCARD", R.drawable.ic_action_discard, "Discard"))
+                }
+            }
         }
-        if (item.status == DownloadStatus.DOWNLOADING || item.status == DownloadStatus.STARTING) {
-            builder.addAction(R.drawable.ic_action_pause, "Pause", control(context, id, PREFIX + "PAUSE"))
-        }
-        if (active) {
-            builder.addAction(R.drawable.ic_action_stop, "Stop", control(context, id, PREFIX + "STOP"))
-        }
-        builder.addAction(R.drawable.ic_action_discard, "Discard", dismissTracking(context, id, notificationId))
         return builder
     }
 
-    private fun openApp(context: Context): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        return PendingIntent.getActivity(context, 915, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    private fun downloadDetails(item: DownloadItem, state: String): String = buildString {
+        append(state)
+        if (item.durationSeconds > 0L) append("\nDuration: ").append(formatDuration(item.durationSeconds))
+        if (item.totalSize != "—") append("\nSize: ").append(item.totalSize)
+        if (item.downloaded != "—") append("\nDownloaded: ").append(item.downloaded)
+        if (item.speed != "—") append("\nSpeed: ").append(item.speed)
+        if (item.eta != "—") append("\nETA: ").append(item.eta)
+        if (item.error.isNotBlank()) append("\n").append(item.error)
     }
 
-    private fun dismissTracking(context: Context, id: String, notificationId: Int): PendingIntent {
+    private fun DownloadItem.progressPercent(): Int = (progress * 100f).toInt().coerceIn(0, 100)
+
+    private fun action(
+        context: Context,
+        itemId: String,
+        action: String,
+        icon: Int,
+        label: String
+    ): NotificationCompat.Action {
         val intent = Intent(context, ShareDownloadActionReceiver::class.java).apply {
-            action = PREFIX + "DISCARD"
-            putExtra(EXTRA_ITEM_ID, id)
-            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            this.action = action
+            putExtra(EXTRA_ITEM_ID, itemId)
         }
-        return PendingIntent.getBroadcast(context, id.hashCode() + 0x51A, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val pending = PendingIntent.getBroadcast(
+            context,
+            31 * itemId.hashCode() + action.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Action.Builder(icon, label, pending).build()
     }
 
-    private fun control(context: Context, id: String, action: String): PendingIntent {
-        val intent = Intent(context, ShareDownloadActionReceiver::class.java).apply { this.action = action; putExtra(EXTRA_ITEM_ID, id) }
-        return PendingIntent.getBroadcast(context, id.hashCode() + action.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-    }
-
-    fun performControl(context: Context, intent: Intent) {
+    /** Every action is validated against the latest persisted queue item. */
+    fun handleAction(context: Context, intent: Intent) {
         DownloadCoordinator.initialize(context.applicationContext)
         val id = intent.getStringExtra(EXTRA_ITEM_ID) ?: return
         when (intent.action) {
-            PREFIX + "PAUSE" -> DownloadCoordinator.pause(id)
-            PREFIX + "RESUME" -> DownloadCoordinator.resume(id)
-            PREFIX + "STOP" -> DownloadCoordinator.stop(id)
+            ACTION_PREFIX + "VIDEO" -> DownloadCoordinator.startSharedDownload(id, DownloadMode.VIDEO)
+            ACTION_PREFIX + "AUDIO" -> DownloadCoordinator.startSharedDownload(id, DownloadMode.AUDIO)
+            ACTION_PREFIX + "PAUSE" -> DownloadCoordinator.pause(id)
+            ACTION_PREFIX + "RESUME" -> DownloadCoordinator.resume(id)
+            ACTION_PREFIX + "STOP" -> DownloadCoordinator.stop(id)
+            ACTION_PREFIX + "DISCARD" -> DownloadCoordinator.remove(id)
         }
-        DownloadCoordinator.items.value.firstOrNull { it.id == id }?.let { showTrackingForItem(context, id, it) }
     }
 
-    private fun showError(context: Context, id: Int, title: String, message: String) {
-        val intent = Intent(context, ShareDownloadActionReceiver::class.java).apply { action = PREFIX + "DISCARD"; putExtra(EXTRA_NOTIFICATION_ID, id) }
-        val pending = PendingIntent.getBroadcast(context, id + 17, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val builder = NotificationCompat.Builder(context, CHANNEL_ID).setSmallIcon(R.drawable.ic_download_studio)
-            .setContentTitle(title.ifBlank { "Download Studio" }).setContentText(message)
-            .setAutoCancel(false).setOngoing(false).setStyle(NotificationCompat.BigTextStyle().bigText(message))
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dismiss", pending)
-        NotificationManagerCompat.from(context).notify(id, builder.build())
+    private fun openApp(context: Context): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        return PendingIntent.getActivity(
+            context, 915, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
-    private fun activeId(id: String): Int = ACTIVE_ID_BASE + (id.hashCode() and 0x7fffffff) % 100000
+    private fun notificationTag(itemId: String): String = NOTIFICATION_TAG_PREFIX + itemId
 
     private fun loadBitmap(raw: String): Bitmap? = runCatching {
-        URL(raw).openConnection().apply { connectTimeout = 5000; readTimeout = 5000 }.getInputStream().use { BitmapFactory.decodeStream(it) }
-    }.getOrNull()
-
-    private fun previewSummary(duration: Long, sizeBytes: Long): String {
-        val durationText = if (duration > 0L) formatDuration(duration) else "Duration unavailable"
-        val sizeText = if (sizeBytes > 0L) "Approx. " + formatBytes(sizeBytes) else "Size unavailable"
-        return "Shared link · " + durationText + " · " + sizeText
-    }
-
-    private fun formatBytes(value: Long): String {
-        val units = listOf("B", "KB", "MB", "GB", "TB")
-        var amount = value.toDouble()
-        var index = 0
-        while (amount >= 1024.0 && index < units.lastIndex) { amount /= 1024.0; index++ }
-        return "%.1f %s".format(amount, units[index])
-    }
+        URL(raw).openConnection().apply {
+            connectTimeout = 5000
+            readTimeout = 5000
+        }.getInputStream().use { BitmapFactory.decodeStream(it) }
+    }.onFailure { Log.w(TAG, "Unable to load notification thumbnail", it) }.getOrNull()
 
     private fun formatDuration(seconds: Long): String {
-        val h = seconds / 3600; val m = (seconds % 3600) / 60; val s = seconds % 60
-        return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
+        val remainder = seconds % 60
+        return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, remainder)
+        else "%d:%02d".format(minutes, remainder)
     }
 }
