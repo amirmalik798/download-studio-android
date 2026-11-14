@@ -84,6 +84,55 @@ object StorageAccess {
         node.takeIf { it.exists() && it.isFile }
     }.getOrNull()
 
+
+    data class FolderScanResult(val matches: List<String>, val complete: Boolean)
+
+    /**
+     * Search only the configured document tree for a previously downloaded file.
+     * A bounded scan avoids untrusted providers or huge trees monopolizing the app.
+     */
+    fun scanConfiguredDownloadsFolder(
+        context: Context,
+        fileName: String,
+        maxEntries: Int = 8000,
+        maxDepth: Int = 8
+    ): FolderScanResult? = runCatching {
+        if (fileName.isBlank() || fileName.contains('/') || fileName == "." || fileName == "..") return null
+        val base = destinationPath(context)?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
+        val root = treeRoot(context) ?: return null
+        if (!root.exists() || !root.isDirectory) return null
+
+        val matches = linkedSetOf<String>()
+        var visited = 0
+        var complete = true
+
+        fun visit(directory: DocumentFile, relative: String, depth: Int) {
+            if (depth > maxDepth) {
+                complete = false
+                return
+            }
+            val children = directory.listFiles()
+            for (child in children) {
+                visited++
+                if (visited > maxEntries) {
+                    complete = false
+                    return
+                }
+                val name = child.name ?: continue
+                if (child.isFile && name == fileName) {
+                    matches.add("$base/${relative}$name")
+                } else if (child.isDirectory && !(depth == 0 && name == "DownloadStudioState")) {
+                    val next = if (relative.isEmpty()) "$name/" else "$relative$name/"
+                    visit(child, next, depth + 1)
+                    if (!complete) return
+                }
+            }
+        }
+
+        visit(root, "", 0)
+        FolderScanResult(matches.toList(), complete)
+    }.getOrNull()
+
     /** Resolve the parent directory of a completed download for file-manager intents. */
     fun findDownloadedFolder(context: Context, outputPath: String): DocumentFile? =
         findDownloadedDocument(context, outputPath)?.parentFile
