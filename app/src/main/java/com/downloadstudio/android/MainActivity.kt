@@ -682,10 +682,6 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     }
                 }
             }
-            /* completed state is rendered in the status branch above */
-            if (item.status == DownloadStatus.COMPLETED) {
-                Text(item.outputPath.substringAfterLast('/').ifBlank { "Saved to Downloads" }, color = Green, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
         }
     }
 }
