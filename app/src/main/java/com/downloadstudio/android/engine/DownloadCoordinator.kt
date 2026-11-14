@@ -154,6 +154,7 @@ object DownloadCoordinator {
             }
             resumeExistingDownloads(_items.value)
             QueueStore.mirrorBackup(appContext, _items.value, force = true)
+            ShareDownloadNotification.syncQueue(appContext)
             pump()
         }
     }
