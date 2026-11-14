@@ -135,6 +135,30 @@ def main() -> int:
             "dataSync foreground service type missing from manifest")
     require("com.termux.RUN_COMMAND" in termux and 'python -m pip install -U' in termux, "Termux command/install integration missing")
     require(any((ROOT / ".github/workflows" / name).is_file() for name in ("main.yml", "build-apk.yml")), "GitHub Actions workflow missing")
+    require("active.putIfAbsent(item.id, monitor)" in coordinator,
+            "Concurrent recovery can register duplicate download monitors")
+    require("val beforeLaunch" in coordinator and "val afterLaunch" in coordinator and
+            "signal(id, \"INT\")" in coordinator,
+            "A removed queue row can still launch an orphan Termux download")
+    require("id in active.keys || item.status" in coordinator,
+            "Removing an item does not cancel a pending queue worker")
+    require("actuallyRemoved.forEach" in coordinator,
+            "Folder reconciliation cancels notifications for entries that were not actually removed")
+    require("buildChildDocumentsUriUsingTree" in storage and "contentResolver.query" in storage and
+            "DocumentsProvider omitted a child MIME type" in storage,
+            "Folder scanning cannot distinguish an empty folder from a failed SAF query")
+    require("prefs.edit().remove(KEY_QUEUE).commit()" in queue_store and
+            "restoreFromExternal(context).orEmpty()" in queue_store and
+            "progressValue.isFinite()" in queue_store,
+            "Corrupt queue preference recovery and finite progress validation are missing")
+    require('Regex("[A-Za-z0-9_-]{1,48}")' in termux and
+            'mode == "VIDEO" || mode == "AUDIO"' in termux and
+            'case \"\\$ds_pid\" in *[!0-9]*)' in termux,
+            "Termux path identifiers, modes, or PID values are not validated")
+    require("kill -CONT" in termux and "kill -$signal" in termux and
+            "kill -INT" in termux,
+            "Stopping a SIGSTOP-paused Termux process may leave it stuck")
+
     print("PASS: manifest permissions; foreground dataSync monitor declared; overlay and Usage Access removed")
     print("PASS: Downloads search, status/type/date filters and fixed newest-arrival order")
     print("PASS: real title capture, completion timestamp persistence and default-app opening")
