@@ -58,7 +58,7 @@ def main() -> int:
     require(thermal_retry_guard in coordinator, "Thermal retry marker is not cleared before a new run")
     require("MAX_DOWNLOAD_RUNTIME_MS" in coordinator and "STALL_TIMEOUT_MS" in coordinator and "START_TIMEOUT_MS" in coordinator, "Bounded download monitoring missing")
     require("readStateTail" in coordinator and "fun readStateTail" in storage, "Tail-only log polling missing")
-    require("current.status == DownloadStatus.QUEUED) current" in coordinator, "Progress parser status guard is malformed or missing")
+    require("current.status in setOf(DownloadStatus.PAUSED, DownloadStatus.STOPPED, DownloadStatus.QUEUED)) current" in coordinator, "Progress parser status guard is malformed or missing")
     require("while (true)" not in coordinator and "while (true)" not in main_activity, "Unbounded polling loop remains")
     require('bestvideo*+bestaudio/best' in termux and 'bestaudio/best' in termux and '--audio-quality 0 --audio-format mp3' in termux, "Best-available video/audio selectors missing")
     manifest_text = (ROOT / "app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
