@@ -104,7 +104,11 @@ object QueueStore {
                         error = o.optString("error", ""),
                         createdAt = o.optLong("createdAt", System.currentTimeMillis()),
                         completedAt = o.optLong("completedAt", 0L),
-                        thumbnailUrl = o.optString("thumbnailUrl", "")
+                        thumbnailUrl = o.optString("thumbnailUrl", ""),
+                        awaitingChoice = o.optBoolean("awaitingChoice", false),
+                        sourceName = o.optString("sourceName", ""),
+                        durationSeconds = o.optLong("durationSeconds", 0L).coerceAtLeast(0L),
+                        estimatedSizeBytes = o.optLong("estimatedSizeBytes", 0L).coerceAtLeast(0L)
                     )
                 )
             }
@@ -131,6 +135,10 @@ object QueueStore {
                 put("createdAt", item.createdAt)
                 put("completedAt", item.completedAt)
                 put("thumbnailUrl", item.thumbnailUrl)
+                put("awaitingChoice", item.awaitingChoice)
+                put("sourceName", item.sourceName)
+                put("durationSeconds", item.durationSeconds)
+                put("estimatedSizeBytes", item.estimatedSizeBytes)
             })
         }
     }
@@ -156,6 +164,10 @@ object QueueStore {
                 put("createdAt", item.createdAt)
                 put("completedAt", item.completedAt)
                 put("thumbnailUrl", item.thumbnailUrl)
+                put("awaitingChoice", item.awaitingChoice)
+                put("sourceName", item.sourceName)
+                put("durationSeconds", item.durationSeconds)
+                put("estimatedSizeBytes", item.estimatedSizeBytes)
             })
         }
     }.toString()
