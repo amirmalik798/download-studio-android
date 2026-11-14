@@ -321,21 +321,40 @@ object DownloadCoordinator {
     }
 
     fun remove(id: String) {
-        val item = _items.value.firstOrNull { it.id == id } ?: return
-        if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)) {
+        if (id.isBlank()) return
+        // Persist the tombstone before stopping/updating a running worker. Any
+        // concurrent progress update is now forbidden from publishing this ID.
+        QueueStore.markDiscarded(appContext, setOf(id))
+        val item = _items.value.firstOrNull { it.id == id }
+        if (item != null && item.status in setOf(
+                DownloadStatus.DOWNLOADING, DownloadStatus.STARTING,
+                DownloadStatus.PAUSED, DownloadStatus.PROCESSING
+            )
+        ) {
             stop(id)
         }
+        active.remove(id)?.cancel()
+        cancelled.add(id)
+        thermalDeferred.remove(id)
         synchronized(stateLock) {
-            _items.value = _items.value.filterNot { it.id == id }
+            _items.value = _items.value.filterNot {
+                it.id == id || QueueStore.isDiscarded(appContext, it.id)
+            }
             QueueStore.save(appContext, _items.value)
         }
+        ShareDownloadNotification.cancelItem(appContext, id)
         ShareDownloadNotification.syncQueue(appContext)
     }
 
     fun clearFinished() {
+        val finishedIds = _items.value.filter {
+            it.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.STOPPED)
+        }.map { it.id }
+        QueueStore.markDiscarded(appContext, finishedIds)
         synchronized(stateLock) {
             _items.value = _items.value.filterNot {
-                it.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.STOPPED)
+                it.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.STOPPED) ||
+                    QueueStore.isDiscarded(appContext, it.id)
             }
             QueueStore.save(appContext, _items.value)
         }
@@ -346,6 +365,8 @@ object DownloadCoordinator {
         // Close the queue pump gate before taking the snapshot. Workers that finish
         // during this operation must not launch another queued item.
         bulkClearing = true
+        val idsToDiscard = (active.keys + _items.value.map { it.id }).toSet()
+        QueueStore.markDiscarded(appContext, idsToDiscard)
         val idsToStop = synchronized(stateLock) {
             val ids = (active.keys + _items.value.filter {
                 it.status in setOf(
@@ -654,7 +675,9 @@ object DownloadCoordinator {
 
     private fun update(id: String, transform: (DownloadItem) -> DownloadItem) {
         synchronized(stateLock) {
-            _items.value = _items.value.map { if (it.id == id) transform(it) else it }
+            _items.value = _items.value
+                .filterNot { QueueStore.isDiscarded(appContext, it.id) }
+                .map { if (it.id == id) transform(it) else it }
             QueueStore.save(appContext, _items.value)
         }
         ShareDownloadNotification.syncQueue(appContext)
