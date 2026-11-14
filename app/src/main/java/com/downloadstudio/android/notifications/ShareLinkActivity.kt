@@ -1,17 +1,12 @@
 package com.downloadstudio.android.notifications
 
-import android.Manifest
 import android.content.ClipData
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.engine.DownloadCoordinator
 
@@ -21,13 +16,6 @@ import com.downloadstudio.android.engine.DownloadCoordinator
  */
 class ShareLinkActivity : ComponentActivity() {
     private var acceptedIds: ArrayList<String> = arrayListOf()
-
-    private val notificationPermission = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) acceptedIds.forEach { LinkStatusNotification.show(applicationContext, it) }
-        finishQuietly()
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,7 +29,13 @@ class ShareLinkActivity : ComponentActivity() {
         if (savedInstanceState == null) {
             val urls = extractSharedUrls(intent)
             urls.forEach { url ->
-                runCatching { DownloadCoordinator.enqueueForChoice(url, DownloadMode.VIDEO) }
+                runCatching {
+                    DownloadCoordinator.enqueueForChoice(
+                        url,
+                        DownloadMode.VIDEO,
+                        notificationEligible = true
+                    )
+                }
                     .onSuccess { id ->
                         acceptedIds.add(id)
                         LinkMetadataResolver.resolve(applicationContext, id, url, updateNotification = true)
@@ -54,14 +48,10 @@ class ShareLinkActivity : ComponentActivity() {
             return
         }
 
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            acceptedIds.forEach { LinkStatusNotification.show(applicationContext, it) }
-            finishQuietly()
-        }
+        // Do not request runtime permission from this translucent share target.
+        // Permission is requested from the normal visible MainActivity instead.
+        acceptedIds.forEach { LinkStatusNotification.show(applicationContext, it) }
+        finishQuietly()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
