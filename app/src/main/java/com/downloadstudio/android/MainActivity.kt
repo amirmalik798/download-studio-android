@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.provider.DocumentsContract
 import android.provider.Settings
 import android.widget.Toast
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -48,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
+import com.downloadstudio.android.data.SharedLinkState
 import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.engine.DownloadCoordinator
 import com.downloadstudio.android.engine.TermuxBridge
@@ -122,27 +124,30 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncoming(intent: Intent?) {
-        val raw = when (intent?.action) {
-            Intent.ACTION_VIEW -> intent.dataString
-            else -> null
-        } ?: return
-        val url = extractFirstUrl(raw) ?: return
-        val notificationId = ShareDownloadNotification.nextPreviewId()
-        Thread {
-            val metadata = runCatching {
-                if (!isPublicHttpsUrl(url)) PreviewMetadata() else {
-                    val extracted = kotlinx.coroutines.runBlocking { resolveDownloaderPreview(applicationContext, url) }
-                    val page = if (extracted.title.isBlank() || extracted.thumbnailUrl.isBlank() || extracted.durationSeconds <= 0L) resolvePageMetadata(url) else PreviewMetadata()
-                    PreviewMetadata(
-                        title = extracted.title.ifBlank { page.title },
-                        thumbnailUrl = extracted.thumbnailUrl.ifBlank { page.thumbnailUrl },
-                        durationSeconds = extracted.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds,
-                        sizeBytes = extracted.sizeBytes
-                    )
-                }
-            }.getOrDefault(PreviewMetadata())
-            runOnUiThread { if (!isFinishing && !isDestroyed) ShareDownloadNotification.showPreview(this, notificationId, url, metadata.title, metadata.thumbnailUrl, metadata.durationSeconds, metadata.sizeBytes) }
-        }.start()
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val url = extractFirstUrl(intent.dataString.orEmpty()) ?: return
+        val id = runCatching { DownloadCoordinator.addSharedLink(url) }.getOrElse {
+            Log.e("DownloadStudioShare", "Unable to queue incoming VIEW link", it)
+            return
+        }
+        Thread({
+            val safe = runCatching { isPublicHttpsUrl(url) }.getOrDefault(false)
+            val extracted = if (safe) runCatching {
+                kotlinx.coroutines.runBlocking { resolveDownloaderPreview(applicationContext, url) }
+            }.getOrDefault(PreviewMetadata()) else PreviewMetadata()
+            val page = if (safe && (extracted.title.isBlank() || extracted.thumbnailUrl.isBlank() || extracted.durationSeconds <= 0L)) {
+                resolvePageMetadata(url)
+            } else PreviewMetadata()
+            DownloadCoordinator.updateSharedLinkPreview(
+                id,
+                extracted.title.ifBlank { page.title }.ifBlank { mediaSiteName(url) + " media" },
+                extracted.thumbnailUrl.ifBlank { page.thumbnailUrl },
+                extracted.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds,
+                extracted.sizeBytes,
+                safe,
+                if (safe) "" else "The link could not be verified as a public media URL."
+            )
+        }, "DownloadStudio-view-preview").start()
     }
 
     companion object { }
@@ -154,16 +159,33 @@ class MainActivity : ComponentActivity() {
  * It posts a persistent notification immediately, then enriches it with extractor-confirmed metadata.
  */
 class ShareLinkActivity : ComponentActivity() {
+    private var sharedUrl: String? = null
     private var handled = false
 
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) processSharedLink() else finish()
+        if (granted) processSharedLink()
+        else {
+            Toast.makeText(
+                this,
+                "Notifications are disabled. Enable Download Studio notifications in Android Settings, then share the link again.",
+                Toast.LENGTH_LONG
+            ).show()
+            finish()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        sharedUrl = extractSharedUrl(intent)
+        if (sharedUrl.isNullOrBlank()) {
+            Log.w("DownloadStudioShare", "Share intent contained no URL (action=${intent?.action}, type=${intent?.type})")
+            Toast.makeText(this, "No supported media link was found in the shared content.", Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
+
         DownloadCoordinator.initialize(applicationContext)
         ShareDownloadNotification.ensureChannel(applicationContext)
 
@@ -178,56 +200,97 @@ class ShareLinkActivity : ComponentActivity() {
 
     private fun processSharedLink() {
         if (handled) return
-        handled = true
-        val raw = when (intent?.action) {
-            Intent.ACTION_SEND -> intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
-            else -> null
-        }.orEmpty()
-        val url = extractFirstUrl(raw)
-        if (url.isNullOrBlank() || !isPublicHttpsUrl(url)) {
+        val url = sharedUrl ?: extractSharedUrl(intent) ?: run {
+            finish()
+            return
+        }
+        if (!ShareDownloadNotification.canPostNotifications(this)) {
+            Log.w("DownloadStudioShare", "Notification runtime permission, app notifications, or channel is disabled.")
+            Toast.makeText(
+                this,
+                "Allow notifications for Download Studio in Android Settings to receive shared-link download actions.",
+                Toast.LENGTH_LONG
+            ).show()
             finish()
             return
         }
 
-        val appContext = applicationContext
-        val notificationId = ShareDownloadNotification.nextPreviewId()
-        runCatching {
-            ShareDownloadNotification.showPreview(
-                appContext, notificationId, url, "Checking media details…", "", 0L, 0L
-            )
+        handled = true
+        val itemId = runCatching { DownloadCoordinator.addSharedLink(url) }.getOrElse {
+            Log.e("DownloadStudioShare", "Unable to persist incoming shared link", it)
+            Toast.makeText(this, it.message ?: "Unable to accept the shared link.", Toast.LENGTH_LONG).show()
+            finish()
+            return
         }
 
+        // addSharedLink persists the preview and synchronously posts its notification
+        // before any DNS lookup, Termux call, or website metadata request begins.
         Thread({
-            val metadata = runCatching {
-                val extracted = kotlinx.coroutines.runBlocking {
-                    resolveDownloaderPreview(appContext, url)
-                }
-                val page = if (
-                    extracted.title.isBlank() ||
-                    extracted.thumbnailUrl.isBlank() ||
-                    extracted.durationSeconds <= 0L
-                ) {
-                    resolvePageMetadata(url)
-                } else {
-                    PreviewMetadata()
-                }
-                PreviewMetadata(
-                    title = extracted.title.ifBlank { page.title },
-                    thumbnailUrl = extracted.thumbnailUrl.ifBlank { page.thumbnailUrl },
-                    durationSeconds = extracted.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds,
-                    sizeBytes = extracted.sizeBytes
+            val publicLink = runCatching { isPublicHttpsUrl(url) }.getOrDefault(false)
+            if (!publicLink) {
+                DownloadCoordinator.updateSharedLinkPreview(
+                    itemId,
+                    mediaSiteName(url) + " link",
+                    "",
+                    0L,
+                    0L,
+                    false,
+                    "The link could not be verified as a public HTTPS media URL."
                 )
-            }.getOrDefault(PreviewMetadata())
-            ShareDownloadNotification.updatePreview(
-                appContext, notificationId, url,
-                metadata.title.ifBlank { "Media link" },
-                metadata.thumbnailUrl,
-                metadata.durationSeconds,
-                metadata.sizeBytes
-            )
-        }, "DownloadStudio-share-preview").start()
+                runOnUiThread { finish() }
+                return@Thread
+            }
 
-        finish()
+            val extracted = runCatching {
+                kotlinx.coroutines.runBlocking { resolveDownloaderPreview(applicationContext, url) }
+            }.getOrDefault(PreviewMetadata())
+            val page = if (
+                extracted.title.isBlank() ||
+                extracted.thumbnailUrl.isBlank() ||
+                extracted.durationSeconds <= 0L
+            ) resolvePageMetadata(url) else PreviewMetadata()
+
+            DownloadCoordinator.updateSharedLinkPreview(
+                itemId,
+                extracted.title.ifBlank { page.title }.ifBlank { mediaSiteName(url) + " media" },
+                extracted.thumbnailUrl.ifBlank { page.thumbnailUrl },
+                extracted.durationSeconds.takeIf { it > 0L } ?: page.durationSeconds,
+                extracted.sizeBytes,
+                true
+            )
+            runOnUiThread { finish() }
+        }, "DownloadStudio-share-preview").start()
+    }
+
+    private fun extractSharedUrl(source: Intent?): String? {
+        if (source == null) return null
+        val candidates = mutableListOf<String>()
+
+        runCatching {
+            when (val text = source.extras?.get(Intent.EXTRA_TEXT)) {
+                is CharSequence -> candidates += text.toString()
+                is android.net.Uri -> candidates += text.toString()
+                is ArrayList<*> -> text.filterNotNull().forEach { candidates += it.toString() }
+            }
+        }
+        runCatching {
+            source.getCharSequenceExtra(Intent.EXTRA_SUBJECT)?.toString()?.let(candidates::add)
+        }
+        source.dataString?.let(candidates::add)
+        source.clipData?.let { clip ->
+            for (index in 0 until clip.itemCount) {
+                val item = clip.getItemAt(index)
+                item.text?.toString()?.let(candidates::add)
+                item.uri?.toString()?.let(candidates::add)
+            }
+        }
+        runCatching {
+            when (val stream = source.extras?.get(Intent.EXTRA_STREAM)) {
+                is android.net.Uri -> candidates += stream.toString()
+                is ArrayList<*> -> stream.filterNotNull().forEach { candidates += it.toString() }
+            }
+        }
+        return candidates.firstNotNullOfOrNull(::extractFirstUrl)
     }
 }
 
@@ -648,26 +711,34 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
         Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 val thumbnailUrl = item.thumbnailUrl.takeIf { it.isNotBlank() } ?: youtubeThumbnailUrl(item.url)
+                val isVideo = item.mode == DownloadMode.VIDEO
+                val isShared = item.shareState != null
                 var thumbnailFailed by remember(item.id, thumbnailUrl) { mutableStateOf(false) }
-                Box(Modifier.size(width = 92.dp, height = 58.dp).clip(RoundedCornerShape(10.dp)).background(if (item.mode == DownloadMode.VIDEO) Blue.copy(alpha = .15f) else Green.copy(alpha = .15f)), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(width = 92.dp, height = 58.dp).clip(RoundedCornerShape(10.dp)).background(if (isShared) Violet.copy(alpha = .15f) else if (isVideo) Blue.copy(alpha = .15f) else Green.copy(alpha = .15f)), contentAlignment = Alignment.Center) {
                     if (thumbnailUrl != null && !thumbnailFailed) {
                         AsyncImage(model = thumbnailUrl, contentDescription = "YouTube thumbnail", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(), onError = { thumbnailFailed = true })
                     } else {
-                        Icon(if (item.mode == DownloadMode.VIDEO) Icons.Default.PlayCircle else Icons.Default.MusicNote, null, tint = if (item.mode == DownloadMode.VIDEO) Blue else Green)
+                        Icon(if (isShared) Icons.Default.Share else if (isVideo) Icons.Default.PlayCircle else Icons.Default.MusicNote, null, tint = if (isShared) Violet else if (isVideo) Blue else Green)
                     }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        val isVideo = item.mode == DownloadMode.VIDEO
-                        Box(Modifier.clip(CircleShape).background((if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
-                            Text(if (isVideo) "VIDEO" else "AUDIO", color = if (isVideo) Blue else Green, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                        Box(Modifier.clip(CircleShape).background((if (isShared) Violet else if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
+                            Text(if (isShared) "SHARED" else if (isVideo) "VIDEO" else "AUDIO", color = if (isShared) Violet else if (isVideo) Blue else Green, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                         }
                         Text(mediaSiteName(item.url), color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
-                    Text(friendlyStatus(item.status), color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        when (item.shareState) {
+                            SharedLinkState.PREVIEWING -> "Checking"
+                            SharedLinkState.AWAITING_ACTION -> if (item.shareReady) "Ready" else "Review"
+                            null -> friendlyStatus(item.status)
+                        },
+                        color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold
+                    )
                 }
                 var actionsExpanded by remember(item.id) { mutableStateOf(false) }
                 Box {
@@ -734,7 +805,26 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     }
                 }
             }
-            when (item.status) {
+            if (item.shareState == SharedLinkState.PREVIEWING) {
+                Text("Checking shared media details…", color = Cyan, fontSize = 10.sp)
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
+                    color = Cyan,
+                    trackColor = Line
+                )
+            } else if (item.shareState == SharedLinkState.AWAITING_ACTION) {
+                Text(
+                    if (item.shareReady) "Ready — choose video or audio" else friendlyError(item.error),
+                    color = if (item.shareReady) Cyan else Red,
+                    fontSize = 10.sp
+                )
+                if (item.shareReady) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { DownloadCoordinator.startSharedDownload(item.id, DownloadMode.VIDEO) }) { Text("Video", color = Blue) }
+                        TextButton(onClick = { DownloadCoordinator.startSharedDownload(item.id, DownloadMode.AUDIO) }) { Text("Audio", color = Green) }
+                    }
+                }
+            } else when (item.status) {
                 DownloadStatus.STARTING -> {
                     Text("Preparing download…", color = TextMuted, fontSize = 10.sp)
                     LinearProgressIndicator(
@@ -1280,7 +1370,7 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
         title = { Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3")
+                DetailLine("Type", if (item.shareState != null) "Shared link · choose video or audio" else if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3")
                 DetailLine("Status", friendlyStatus(item.status))
                 DetailLine("Download date", formatDownloadDate(item))
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
@@ -1298,6 +1388,10 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
         },
         confirmButton = {
             Row {
+                if (item.shareState == SharedLinkState.AWAITING_ACTION && item.shareReady) {
+                    TextButton(onClick = { DownloadCoordinator.startSharedDownload(item.id, DownloadMode.VIDEO); onDismiss() }) { Text("Download video") }
+                    TextButton(onClick = { DownloadCoordinator.startSharedDownload(item.id, DownloadMode.AUDIO); onDismiss() }) { Text("Download audio") }
+                }
                 if (item.status == DownloadStatus.DOWNLOADING) TextButton(onClick = { DownloadCoordinator.pause(item.id); onDismiss() }) { Text("Pause") }
                 if (item.status == DownloadStatus.PAUSED) TextButton(onClick = { DownloadCoordinator.resume(item.id); onDismiss() }) { Text("Resume") }
                 if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)) TextButton(onClick = { DownloadCoordinator.stop(item.id); onDismiss() }) { Text("Stop", color = Red) }
