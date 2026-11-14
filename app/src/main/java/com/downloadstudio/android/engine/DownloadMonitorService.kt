@@ -48,6 +48,7 @@ class DownloadMonitorService : Service() {
             return START_NOT_STICKY
         }
 
+        DownloadCoordinator.onMonitorServiceStarted()
         DownloadCoordinator.initialize(applicationContext)
         observation?.cancel()
         observation = serviceScope.launch {
