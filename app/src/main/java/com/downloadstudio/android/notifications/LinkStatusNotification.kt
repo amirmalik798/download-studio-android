@@ -13,6 +13,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.util.LruCache
+import java.io.ByteArrayOutputStream
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -22,6 +23,8 @@ import com.downloadstudio.android.R
 import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.engine.DownloadCoordinator
 import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.URI
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -151,7 +154,7 @@ object LinkStatusNotification {
         RemoteViews(context.packageName, R.layout.notification_link_collapsed).apply {
             setTextViewText(R.id.notification_source_small, item.sourceName.ifBlank { LinkMetadataResolver.siteName(item.url) }.uppercase())
             setTextViewText(R.id.notification_title_small, item.title.ifBlank { "New link added to your queue" })
-            setTextViewText(R.id.notification_state_small, "Accepted · ${formatDuration(item.durationSeconds)} · ${formatBytes(item.estimatedSizeBytes)}")
+            setTextViewText(R.id.notification_state_small, "Accepted · Length ${formatDuration(item.durationSeconds)} · Size ${formatBytes(item.estimatedSizeBytes)}")
             if (thumbnail != null) setImageViewBitmap(R.id.notification_thumbnail_small, thumbnail)
             else setImageViewResource(R.id.notification_thumbnail_small, R.drawable.ic_notification_placeholder)
         }
@@ -182,8 +185,10 @@ object LinkStatusNotification {
     }
 
     private fun dismissIntent(context: Context, itemId: String): PendingIntent {
-        val intent = Intent(context, LinkNotificationDismissReceiver::class.java)
-            .putExtra(LinkNotificationDismissReceiver.EXTRA_ITEM_ID, itemId)
+        val intent = Intent(context, LinkNotificationDismissReceiver::class.java).apply {
+            data = Uri.parse("downloadstudio://notification/dismiss/$itemId")
+            putExtra(LinkNotificationDismissReceiver.EXTRA_ITEM_ID, itemId)
+        }
         return PendingIntent.getBroadcast(
             context,
             19 * itemId.hashCode() + 11,
@@ -193,36 +198,78 @@ object LinkStatusNotification {
     }
 
     private fun loadThumbnail(rawUrl: String): Bitmap? = runCatching {
-        val uri = Uri.parse(rawUrl)
-        if (uri.scheme != "https" || uri.host.isNullOrBlank() || uri.userInfo != null) return null
-        val connection = URL(rawUrl).openConnection() as HttpURLConnection
-        connection.connectTimeout = 5_000
-        connection.readTimeout = 5_000
-        connection.instanceFollowRedirects = false
-        connection.setRequestProperty("User-Agent", "DownloadStudio/1.0")
-        connection.connect()
-        try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return null
-            val length = connection.contentLengthLong
-            if (length > 3L * 1024L * 1024L) return null
-            connection.inputStream.use { input ->
-                val bitmap = BitmapFactory.decodeStream(input) ?: return null
-                val maxDimension = 640
-                if (bitmap.width <= maxDimension && bitmap.height <= maxDimension) bitmap
-                else {
-                    val scale = minOf(maxDimension.toFloat() / bitmap.width, maxDimension.toFloat() / bitmap.height)
-                    Bitmap.createScaledBitmap(
-                        bitmap,
-                        (bitmap.width * scale).toInt().coerceAtLeast(1),
-                        (bitmap.height * scale).toInt().coerceAtLeast(1),
-                        true
-                    )
+        var currentUrl = rawUrl
+        repeat(4) {
+            val uri = Uri.parse(currentUrl)
+            if (uri.scheme != "https" || uri.host.isNullOrBlank() || uri.userInfo != null ||
+                !isPublicImageHost(uri.host!!)
+            ) return null
+
+            val connection = URL(currentUrl).openConnection() as HttpURLConnection
+            connection.connectTimeout = 5_000
+            connection.readTimeout = 5_000
+            connection.instanceFollowRedirects = false
+            connection.setRequestProperty("User-Agent", "DownloadStudio/1.0")
+            try {
+                val code = connection.responseCode
+                if (code in 300..399) {
+                    val location = connection.getHeaderField("Location") ?: return null
+                    currentUrl = URI(currentUrl).resolve(location).toString()
+                    return@repeat
                 }
+                if (code != HttpURLConnection.HTTP_OK) return null
+                if (connection.contentLengthLong > 3L * 1024L * 1024L) return null
+
+                val bytes = connection.inputStream.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(8 * 1024)
+                    var total = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > 3 * 1024 * 1024) return null
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                }
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+                val maxDimension = 640
+                if (bitmap.width <= maxDimension && bitmap.height <= maxDimension) return bitmap
+                val scale = minOf(maxDimension.toFloat() / bitmap.width, maxDimension.toFloat() / bitmap.height)
+                return Bitmap.createScaledBitmap(
+                    bitmap,
+                    (bitmap.width * scale).toInt().coerceAtLeast(1),
+                    (bitmap.height * scale).toInt().coerceAtLeast(1),
+                    true
+                ).also { bitmap.recycle() }
+            } finally {
+                connection.disconnect()
             }
-        } finally {
-            connection.disconnect()
         }
+        null
     }.getOrNull()
+
+    private fun isPublicImageHost(host: String): Boolean = runCatching {
+        val addresses = InetAddress.getAllByName(host)
+        addresses.isNotEmpty() && addresses.all { address ->
+            val bytes = address.address
+            val privateIpv4 = bytes.size == 4 && (
+                (bytes[0].toInt() and 0xFF) == 10 ||
+                    (bytes[0].toInt() and 0xFF) == 127 ||
+                    (bytes[0].toInt() and 0xFF) == 0 ||
+                    ((bytes[0].toInt() and 0xFF) == 169 && (bytes[1].toInt() and 0xFF) == 254) ||
+                    ((bytes[0].toInt() and 0xFF) == 172 && (bytes[1].toInt() and 0xF0) == 16) ||
+                    ((bytes[0].toInt() and 0xFF) == 192 && (bytes[1].toInt() and 0xFF) == 168)
+            )
+            val privateIpv6 = bytes.size == 16 &&
+                ((bytes[0].toInt() and 0xFE) == 0xFC ||
+                    ((bytes[0].toInt() and 0xFF) == 0xFE && (bytes[1].toInt() and 0xC0) == 0x80))
+            !address.isAnyLocalAddress && !address.isLoopbackAddress &&
+                !address.isLinkLocalAddress && !address.isSiteLocalAddress &&
+                !address.isMulticastAddress && !privateIpv4 && !privateIpv6
+        }
+    }.getOrDefault(false)
 
     private fun formatDuration(seconds: Long): String {
         if (seconds <= 0L) return "Unavailable"
