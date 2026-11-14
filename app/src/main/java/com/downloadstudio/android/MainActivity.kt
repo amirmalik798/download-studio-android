@@ -109,8 +109,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncoming(intent: Intent?) {
-        val notificationQueueId = intent?.data
-            ?.takeIf { intent.action == Intent.ACTION_VIEW && it.scheme == "downloadstudio" && it.host == "queue" }
+        val notificationQueueId = intent
+            ?.takeIf { it.action == Intent.ACTION_VIEW }
+            ?.data
+            ?.takeIf { it.scheme == "downloadstudio" && it.host == "queue" }
             ?.lastPathSegment
         if (!notificationQueueId.isNullOrBlank()) {
             // Opening the status notification is an explicit dismissal of that
