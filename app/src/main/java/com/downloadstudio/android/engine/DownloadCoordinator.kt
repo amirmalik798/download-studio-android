@@ -8,6 +8,7 @@ import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
+import com.downloadstudio.android.data.SharedLinkState
 import com.downloadstudio.android.notifications.ShareDownloadNotification
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.CoroutineScope
