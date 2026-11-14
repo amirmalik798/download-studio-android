@@ -192,6 +192,7 @@ object DownloadCoordinator {
         if (missingIds.isEmpty() && movedPaths.isEmpty()) return
 
         val originalById = completed.associateBy { it.id }
+        val actuallyRemoved = mutableSetOf<String>()
         synchronized(stateLock) {
             _items.value = _items.value.mapNotNull { current ->
                 val original = originalById[current.id] ?: return@mapNotNull current
@@ -199,13 +200,16 @@ object DownloadCoordinator {
                 if (current.status != DownloadStatus.COMPLETED || current.outputPath != original.outputPath) {
                     return@mapNotNull current
                 }
-                if (current.id in missingIds) return@mapNotNull null
+                if (current.id in missingIds) {
+                    actuallyRemoved.add(current.id)
+                    return@mapNotNull null
+                }
                 val newPath = movedPaths[current.id] ?: return@mapNotNull current
                 current.copy(outputPath = newPath)
             }
             QueueStore.save(appContext, _items.value, durable = true)
         }
-        missingIds.forEach { id ->
+        actuallyRemoved.forEach { id ->
             LinkMetadataResolver.cancel(appContext, id)
             LinkStatusNotification.cancel(appContext, id)
         }
