@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
+import androidx.core.content.ContextCompat
 import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
@@ -25,6 +27,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 object DownloadCoordinator {
     private const val MONITOR_INTERVAL_MS = 2_000L
@@ -43,6 +46,7 @@ object DownloadCoordinator {
     private val active = ConcurrentHashMap<String, Job>()
     private val cancelled = ConcurrentHashMap.newKeySet<String>()
     private val thermalDeferred = ConcurrentHashMap.newKeySet<String>()
+    private val monitorServiceRequested = AtomicBoolean(false)
     private val _items = MutableStateFlow<List<DownloadItem>>(emptyList())
     val items: StateFlow<List<DownloadItem>> = _items.asStateFlow()
     private val _thermalStatus = MutableStateFlow("Thermal guard: checking device")
@@ -56,8 +60,9 @@ object DownloadCoordinator {
         if (initialized) return
         appContext = context.applicationContext
         maxConcurrent = QueueStore.maxConcurrent(appContext)
-        _items.value = QueueStore.load(appContext)
+        _items.value = QueueStore.load(appContext).sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
         initialized = true
+        if (_items.value.any { it.status in MONITORED_STATUSES || (it.status == DownloadStatus.QUEUED && !it.awaitingChoice) }) startMonitoringService()
         registerThermalGuard()
         scope.launch {
             if (StorageAccess.isDownloadLocationConfigured(appContext) && _items.value.isEmpty()) {
@@ -71,6 +76,7 @@ object DownloadCoordinator {
                 }
             }
             if (StorageAccess.isDownloadLocationConfigured(appContext)) {
+                reconcileCompletedFiles()
                 resumeExistingDownloads(_items.value)
                 QueueStore.mirrorBackup(appContext, _items.value, force = true)
             }
@@ -139,9 +145,85 @@ object DownloadCoordinator {
                     }
                 }
             }
+            reconcileCompletedFiles()
             resumeExistingDownloads(_items.value)
             QueueStore.mirrorBackup(appContext, _items.value, force = true)
             pump()
+        }
+    }
+
+    private fun nextArrivalTimestampLocked(): Long = maxOf(
+        System.currentTimeMillis(),
+        (_items.value.maxOfOrNull { it.createdAt } ?: 0L) + 1L
+    )
+
+    /**
+     * If an output no longer exists at its recorded path, look for that exact
+     * filename inside the configured tree. A unique match updates its path;
+     * a complete scan with no match removes only the record, never the file.
+     * Ambiguous or incomplete scans preserve the queue item.
+     */
+    private fun reconcileCompletedFiles() {
+        if (!StorageAccess.isDownloadLocationConfigured(appContext)) return
+        val completed = _items.value.filter {
+            it.status == DownloadStatus.COMPLETED && it.outputPath.isNotBlank()
+        }
+        if (completed.isEmpty()) return
+
+        val movedPaths = mutableMapOf<String, String>()
+        val missingIds = mutableSetOf<String>()
+        completed.forEach { item ->
+            if (StorageAccess.findDownloadedDocument(appContext, item.outputPath) != null) return@forEach
+            val fileName = item.outputPath.substringAfterLast('/').takeIf { it.isNotBlank() } ?: return@forEach
+            val scan = StorageAccess.scanConfiguredDownloadsFolder(appContext, fileName) ?: return@forEach
+            if (!scan.complete) return@forEach
+            when (scan.matches.size) {
+                0 -> missingIds.add(item.id)
+                1 -> movedPaths[item.id] = scan.matches.first()
+                else -> Unit
+            }
+        }
+        if (missingIds.isEmpty() && movedPaths.isEmpty()) return
+
+        synchronized(stateLock) {
+            _items.value = _items.value.filterNot { it.id in missingIds }.map { item ->
+                val newPath = movedPaths[item.id] ?: return@map item
+                item.copy(outputPath = newPath)
+            }
+            QueueStore.save(appContext, _items.value, durable = true)
+        }
+        missingIds.forEach { id ->
+            LinkMetadataResolver.cancel(appContext, id)
+            LinkStatusNotification.cancel(appContext, id)
+        }
+    }
+
+    fun synchronizeDownloadsFolder() {
+        if (!initialized) return
+        scope.launch(Dispatchers.IO) {
+            reconcileCompletedFiles()
+            QueueStore.mirrorBackup(appContext, _items.value, force = false)
+        }
+    }
+
+    fun onMonitorServiceStarted() {
+        monitorServiceRequested.set(true)
+    }
+
+    fun onMonitorServiceStopped() {
+        monitorServiceRequested.set(false)
+    }
+
+    private fun startMonitoringService() {
+        if (!initialized || !monitorServiceRequested.compareAndSet(false, true)) return
+        runCatching {
+            ContextCompat.startForegroundService(
+                appContext,
+                android.content.Intent(appContext, DownloadMonitorService::class.java)
+            )
+        }.onFailure {
+            monitorServiceRequested.set(false)
+            Log.w("DownloadStudio", "Could not start the foreground download monitor", it)
         }
     }
 
@@ -162,17 +244,23 @@ object DownloadCoordinator {
         }
     }
 
-    fun enqueue(url: String, mode: DownloadMode, title: String = "") : String {
+    fun enqueue(url: String, mode: DownloadMode, title: String = ""): String {
         val cleaned = url.trim()
         require(cleaned.startsWith("https://") || cleaned.startsWith("http://")) { "Please provide a valid HTTP or HTTPS link." }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
-        val item = DownloadItem(
-            id = id, url = cleaned, title = title.ifBlank { titleFromUrl(cleaned) }, mode = mode
-        )
         synchronized(stateLock) {
-            _items.value = _items.value + item
-            QueueStore.save(appContext, _items.value)
+            val item = DownloadItem(
+                id = id,
+                url = cleaned,
+                title = title.ifBlank { titleFromUrl(cleaned) },
+                mode = mode,
+                createdAt = nextArrivalTimestampLocked()
+            )
+            _items.value = (_items.value + item)
+                .sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+            QueueStore.save(appContext, _items.value, durable = true)
         }
+        startMonitoringService()
         pump()
         return id
     }
@@ -189,18 +277,20 @@ object DownloadCoordinator {
         }
         require(cleaned.length <= 4096) { "The media link is too long." }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
-        val item = DownloadItem(
-            id = id,
-            url = cleaned,
-            title = titleFromUrl(cleaned),
-            mode = preferredMode,
-            awaitingChoice = true,
-            sourceName = sourceNameFromUrl(cleaned),
-            notificationEligible = notificationEligible
-        )
         synchronized(stateLock) {
-            _items.value = _items.value + item
-            QueueStore.save(appContext, _items.value)
+            val item = DownloadItem(
+                id = id,
+                url = cleaned,
+                title = titleFromUrl(cleaned),
+                mode = preferredMode,
+                createdAt = nextArrivalTimestampLocked(),
+                awaitingChoice = true,
+                sourceName = sourceNameFromUrl(cleaned),
+                notificationEligible = notificationEligible
+            )
+            _items.value = (_items.value + item)
+                .sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+            QueueStore.save(appContext, _items.value, durable = true)
         }
         return id
     }
@@ -249,10 +339,11 @@ object DownloadCoordinator {
                     error = ""
                 )
             }
-            QueueStore.save(appContext, _items.value)
+            QueueStore.save(appContext, _items.value, durable = true)
             chosen = true
         }
         if (chosen) {
+            startMonitoringService()
             LinkMetadataResolver.cancel(appContext, id)
             LinkStatusNotification.cancel(appContext, id)
             pump()
@@ -332,6 +423,7 @@ object DownloadCoordinator {
                 error = ""
             )
         }
+        startMonitoringService()
         pump()
     }
 
@@ -342,7 +434,7 @@ object DownloadCoordinator {
         }
         synchronized(stateLock) {
             _items.value = _items.value.filterNot { it.id == id }
-            QueueStore.save(appContext, _items.value)
+            QueueStore.save(appContext, _items.value, durable = true)
         }
         LinkMetadataResolver.cancel(appContext, id)
         LinkStatusNotification.cancel(appContext, id)
@@ -353,7 +445,7 @@ object DownloadCoordinator {
             _items.value = _items.value.filterNot {
                 it.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.STOPPED)
             }
-            QueueStore.save(appContext, _items.value)
+            QueueStore.save(appContext, _items.value, durable = true)
         }
     }
 
@@ -370,7 +462,7 @@ object DownloadCoordinator {
                 )
             }.map { it.id }).toSet()
             _items.value = emptyList()
-            QueueStore.save(appContext, emptyList())
+            QueueStore.save(appContext, emptyList(), durable = true)
             ids to notificationIds
         }
         idsToClear.second.forEach {
@@ -397,6 +489,7 @@ object DownloadCoordinator {
     }
 
     private fun pump() {
+        startMonitoringService()
         if (!initialized || bulkClearing || StorageAccess.destinationPath(appContext).isNullOrBlank()) return
         if (currentThermalStatus >= THERMAL_DEFER_THRESHOLD) return
         scope.launch {
@@ -412,6 +505,7 @@ object DownloadCoordinator {
     }
 
     private suspend fun runJob(original: DownloadItem) {
+        startMonitoringService()
         val id = original.id
         try {
             val destination = StorageAccess.destinationPath(appContext)
@@ -682,6 +776,8 @@ object DownloadCoordinator {
             QueueStore.save(appContext, _items.value)
         }
     }
+
+    private val MONITORED_STATUSES = setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED)
 
     private fun humanBytes(value: Long): String {
         if (value <= 0) return "—"
