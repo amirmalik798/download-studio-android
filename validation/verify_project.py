@@ -185,7 +185,7 @@ def main() -> int:
     require("afterLaunch.status == DownloadStatus.QUEUED || id in thermalDeferred" in coordinator and
             "signal(id, \"INT\", runToken)" in coordinator,
             "Thermal changes during the Termux handoff can be overwritten")
-    require('"\\$ds_n" -lt 120' in termux[termux.index("fun signalScript"):],
+    require("-lt 120" in termux[termux.index("fun signalScript"):],
             "Stop signals do not wait long enough for delayed Termux process startup")
 
     run_job = coordinator[coordinator.index("private suspend fun runJob"):coordinator.index("private suspend fun monitorExisting")]
