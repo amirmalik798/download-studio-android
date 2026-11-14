@@ -434,8 +434,8 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
         val matches = items.filter { item ->
             val categoryMatches = when (filter) {
                 DownloadFilter.ALL -> true
-                DownloadFilter.VIDEO -> item.mode == DownloadMode.VIDEO
-                DownloadFilter.AUDIO -> item.mode == DownloadMode.AUDIO
+                DownloadFilter.VIDEO -> item.awaitingChoice || item.mode == DownloadMode.VIDEO
+                DownloadFilter.AUDIO -> item.awaitingChoice || item.mode == DownloadMode.AUDIO
                 DownloadFilter.DOWNLOADING -> item.status in setOf(DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)
                 DownloadFilter.DOWNLOADED -> item.status == DownloadStatus.COMPLETED
             }
@@ -591,8 +591,9 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
                     Text(if (item.awaitingChoice) "CHOOSE FORMAT" else friendlyStatus(item.status), color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 }
-                var actionsExpanded by remember(item.id) { mutableStateOf(false) }
-                Box {
+                if (!item.awaitingChoice) {
+                    var actionsExpanded by remember(item.id) { mutableStateOf(false) }
+                    Box {
                     IconButton(onClick = { actionsExpanded = true }, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.MoreVert, "Download actions", tint = TextMuted)
                     }
@@ -653,6 +654,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                             contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
                             onClick = { actionsExpanded = false; onRemoveRequest?.invoke() }
                         )
+                    }
                     }
                 }
             }
