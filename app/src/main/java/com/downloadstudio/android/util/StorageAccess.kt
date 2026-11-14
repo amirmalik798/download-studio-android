@@ -107,7 +107,7 @@ object StorageAccess {
         var complete = true
 
         fun visit(directory: DocumentFile, relative: String, depth: Int) {
-            if (depth > maxDepth) {
+            if (depth > maxDepth || !directory.canRead()) {
                 complete = false
                 return
             }
