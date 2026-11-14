@@ -204,6 +204,7 @@ object QueueStore {
                 put("durationSeconds", item.durationSeconds)
                 put("estimatedSizeBytes", item.estimatedSizeBytes)
                 put("notificationEligible", item.notificationEligible)
+                put("runToken", item.runToken)
             })
         }
     }.toString()
