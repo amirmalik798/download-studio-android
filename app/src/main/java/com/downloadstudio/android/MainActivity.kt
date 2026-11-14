@@ -696,7 +696,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
 private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest: (() -> Unit)? = null) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val color = when (item.status) {
+    val color = if (item.shareState != null) Violet else when (item.status) {
         DownloadStatus.COMPLETED -> Green
         DownloadStatus.FAILED -> Red
         DownloadStatus.PAUSED -> Violet
@@ -1371,7 +1371,11 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 DetailLine("Type", if (item.shareState != null) "Shared link · choose video or audio" else if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3")
-                DetailLine("Status", friendlyStatus(item.status))
+                DetailLine("Status", when (item.shareState) {
+                    SharedLinkState.PREVIEWING -> "Checking media details"
+                    SharedLinkState.AWAITING_ACTION -> if (item.shareReady) "Ready to choose format" else "Needs attention"
+                    null -> friendlyStatus(item.status)
+                })
                 DetailLine("Download date", formatDownloadDate(item))
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
                 DetailLine("Downloaded", item.downloaded)
