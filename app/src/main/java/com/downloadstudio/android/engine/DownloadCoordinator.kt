@@ -86,7 +86,7 @@ object DownloadCoordinator {
                 resumeExistingDownloads(_items.value)
                 QueueStore.mirrorBackup(appContext, _items.value, force = true)
             }
-            ShareDownloadNotification.syncQueue(appContext, _items.value)
+            ShareDownloadNotification.syncQueue(appContext)
             if (currentThermalStatus >= THERMAL_STOP_THRESHOLD) pauseActiveForThermal()
             pump()
         }
@@ -193,12 +193,11 @@ object DownloadCoordinator {
             mode = DownloadMode.VIDEO, status = DownloadStatus.QUEUED,
             shareReady = true, shareState = SharedLinkState.AWAITING_ACTION
         )
-        val snapshot = synchronized(stateLock) {
+        synchronized(stateLock) {
             _items.value = _items.value + item
             QueueStore.save(appContext, _items.value)
-            _items.value.toList()
         }
-        ShareDownloadNotification.syncQueue(appContext, snapshot)
+        ShareDownloadNotification.syncQueue(appContext)
         return id
     }
 
@@ -252,12 +251,11 @@ object DownloadCoordinator {
             durationSeconds = durationSeconds.coerceAtLeast(0L),
             totalSize = estimatedSizeBytes.takeIf { it > 0L }?.let { "≈ " + humanBytes(it) } ?: "—"
         )
-        val snapshot = synchronized(stateLock) {
+        synchronized(stateLock) {
             _items.value = _items.value + item
             QueueStore.save(appContext, _items.value)
-            _items.value.toList()
         }
-        ShareDownloadNotification.syncQueue(appContext, snapshot)
+        ShareDownloadNotification.syncQueue(appContext)
         pump()
         return id
     }
@@ -326,23 +324,21 @@ object DownloadCoordinator {
         if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)) {
             stop(id)
         }
-        val snapshot = synchronized(stateLock) {
+        synchronized(stateLock) {
             _items.value = _items.value.filterNot { it.id == id }
             QueueStore.save(appContext, _items.value)
-            _items.value.toList()
         }
-        ShareDownloadNotification.syncQueue(appContext, snapshot)
+        ShareDownloadNotification.syncQueue(appContext)
     }
 
     fun clearFinished() {
-        val snapshot = synchronized(stateLock) {
+        synchronized(stateLock) {
             _items.value = _items.value.filterNot {
                 it.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.STOPPED)
             }
             QueueStore.save(appContext, _items.value)
-            _items.value.toList()
         }
-        ShareDownloadNotification.syncQueue(appContext, snapshot)
+        ShareDownloadNotification.syncQueue(appContext)
     }
 
     fun clearAll() {
@@ -360,7 +356,7 @@ object DownloadCoordinator {
             QueueStore.save(appContext, emptyList())
             ids
         }
-        ShareDownloadNotification.syncQueue(appContext, emptyList())
+        ShareDownloadNotification.syncQueue(appContext)
 
         idsToStop.forEach { id ->
             cancelled.add(id)
@@ -656,20 +652,18 @@ object DownloadCoordinator {
     }
 
     private fun update(id: String, transform: (DownloadItem) -> DownloadItem) {
-        val snapshot = synchronized(stateLock) {
+        synchronized(stateLock) {
             _items.value = _items.value.map { if (it.id == id) transform(it) else it }
             QueueStore.save(appContext, _items.value)
-            _items.value.toList()
         }
-        ShareDownloadNotification.syncQueue(appContext, snapshot)
+        ShareDownloadNotification.syncQueue(appContext)
     }
 
     private fun persist() {
-        val snapshot = synchronized(stateLock) {
+        synchronized(stateLock) {
             QueueStore.save(appContext, _items.value)
-            _items.value.toList()
         }
-        ShareDownloadNotification.syncQueue(appContext, snapshot)
+        ShareDownloadNotification.syncQueue(appContext)
     }
 
     private fun humanBytes(value: Long): String {
