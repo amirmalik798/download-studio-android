@@ -154,7 +154,7 @@ object LinkStatusNotification {
         RemoteViews(context.packageName, R.layout.notification_link_collapsed).apply {
             setTextViewText(R.id.notification_source_small, item.sourceName.ifBlank { LinkMetadataResolver.siteName(item.url) }.uppercase())
             setTextViewText(R.id.notification_title_small, item.title.ifBlank { "New link added to your queue" })
-            setTextViewText(R.id.notification_state_small, "Accepted · Length ${formatDuration(item.durationSeconds)} · Size ${formatBytes(item.estimatedSizeBytes)}")
+            setTextViewText(R.id.notification_state_small, "Accepted · Length ${formatDuration(item.durationSeconds)} · Approx. size ${formatBytes(item.estimatedSizeBytes)}")
             if (thumbnail != null) setImageViewBitmap(R.id.notification_thumbnail_small, thumbnail)
             else setImageViewResource(R.id.notification_thumbnail_small, R.drawable.ic_notification_placeholder)
         }
@@ -165,7 +165,7 @@ object LinkStatusNotification {
             setTextViewText(R.id.notification_title_large, item.title.ifBlank { "New link added to your queue" })
             setTextViewText(R.id.notification_state_large, "ACCEPTED · WAITING FOR YOUR CHOICE")
             setTextViewText(R.id.notification_duration, "Length · ${formatDuration(item.durationSeconds)}")
-            setTextViewText(R.id.notification_size, "Size · ${formatBytes(item.estimatedSizeBytes)}")
+            setTextViewText(R.id.notification_size, "Approx. size · ${formatBytes(item.estimatedSizeBytes)}")
             if (thumbnail != null) setImageViewBitmap(R.id.notification_thumbnail_large, thumbnail)
             else setImageViewResource(R.id.notification_thumbnail_large, R.drawable.ic_notification_placeholder)
         }
