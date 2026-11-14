@@ -499,8 +499,11 @@ object DownloadCoordinator {
             signal(id, "INT", clearSnapshot.third[id].orEmpty())
             active[id]?.cancel()
         }
-        // No queued records remain; a later enqueue can safely restart the pump.
+        // A share-link can arrive from another app while the clear operation is in
+        // progress. Its pump call may have observed bulkClearing=true, so pump once
+        // more after opening the gate to avoid leaving that new item idle.
         bulkClearing = false
+        pump()
     }
 
     private fun signal(id: String, signal: String, runTokenOverride: String? = null) {
@@ -582,12 +585,21 @@ object DownloadCoordinator {
                 signal(id, "INT", runToken)
                 return
             }
-            if (afterLaunch.status == DownloadStatus.PAUSED) {
-                signal(id, "STOP", runToken)
-            } else {
-                update(id) { current ->
-                    if (current.status == DownloadStatus.PAUSED || current.status == DownloadStatus.STOPPED) current
-                    else current.copy(status = DownloadStatus.DOWNLOADING, speed = "Connecting…")
+            when {
+                afterLaunch.status == DownloadStatus.PAUSED -> signal(id, "STOP", runToken)
+                afterLaunch.status == DownloadStatus.QUEUED || id in thermalDeferred -> {
+                    // A thermal callback may have queued the row during the Termux hand-off.
+                    update(id) { current ->
+                        if (current.status in setOf(DownloadStatus.STOPPED, DownloadStatus.PAUSED)) current
+                        else current.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—")
+                    }
+                    signal(id, "INT", runToken)
+                }
+                afterLaunch.status == DownloadStatus.STARTING -> {
+                    update(id) { current ->
+                        if (current.status == DownloadStatus.STARTING) current.copy(status = DownloadStatus.DOWNLOADING, speed = "Connecting…")
+                        else current
+                    }
                 }
             }
 
@@ -750,6 +762,7 @@ object DownloadCoordinator {
             }
         } finally {
             active.remove(id)
+            cancelled.remove(id)
             thermalDeferred.remove(id)
             persist()
             pump()
