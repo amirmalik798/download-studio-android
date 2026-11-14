@@ -629,18 +629,62 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     }
                 }
             }
-            if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED)) {
-                LinearProgressIndicator(progress = { item.progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape), color = Blue, trackColor = Line)
-                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                    Text("${(item.progress * 100).toInt()}%  ·  ${item.downloaded}", color = TextMuted, fontSize = 9.sp)
-                    Text("${item.speed}  ·  ${item.eta}", color = Cyan, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+            when (item.status) {
+                DownloadStatus.STARTING -> {
+                    Text("Preparing download…", color = TextMuted, fontSize = 10.sp)
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
+                        color = Blue,
+                        trackColor = Line
+                    )
                 }
-            } else if (item.status == DownloadStatus.COMPLETED) {
+                DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED -> {
+                    LinearProgressIndicator(
+                        progress = { item.progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
+                        color = if (item.status == DownloadStatus.PAUSED) Violet else Blue,
+                        trackColor = Line
+                    )
+                    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("${(item.progress * 100).toInt()}%", color = TextMain, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (item.totalSize != "—") "${item.downloaded} / ${item.totalSize}" else item.downloaded,
+                            color = TextMuted,
+                            fontSize = 9.sp
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("Speed  ${item.speed}", color = Cyan, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+                        Text("ETA  ${item.eta}", color = TextMuted, fontSize = 9.sp)
+                    }
+                }
+                DownloadStatus.PROCESSING -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("PROCESSING", color = Cyan, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .6.sp)
+                        Spacer(Modifier.weight(1f))
+                        Text(item.totalSize.takeIf { it != "—" }?.let { "Download received · $it" } ?: "Download received", color = TextMuted, fontSize = 9.sp)
+                    }
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
+                        color = Cyan,
+                        trackColor = Line
+                    )
+                    Text(item.processingStage.ifBlank { "Finalizing media…" }, color = TextMain, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                }
+                DownloadStatus.COMPLETED -> {
+                    Text(item.outputPath.substringAfterLast('/').ifBlank { "Saved to Downloads" }, color = Green, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                else -> {
+                    if (item.error.isNotBlank()) {
+                        Text(friendlyError(item.error), color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    } else {
+                        Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3", color = TextMuted, fontSize = 10.sp)
+                    }
+                }
+            }
+            /* completed state is rendered in the status branch above */
+            if (item.status == DownloadStatus.COMPLETED) {
                 Text(item.outputPath.substringAfterLast('/').ifBlank { "Saved to Downloads" }, color = Green, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            } else if (item.error.isNotBlank()) {
-                Text(friendlyError(item.error), color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            } else {
-                Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3", color = TextMuted, fontSize = 10.sp)
             }
         }
     }
@@ -990,6 +1034,12 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                 Button(onClick = { folderPicker.launch(null) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Panel2)) {
                     Icon(Icons.Default.FolderOpen, null); Spacer(Modifier.width(8.dp)); Text("Choose folder")
                 }
+                Text(
+                    "Queue snapshots are also kept in this folder's DownloadStudioState directory. After reinstalling, choose this same folder again to reconnect saved files and active download logs. Android cloud/device backup can restore the queue too when system backup is enabled.",
+                    color = TextMuted,
+                    fontSize = 9.sp,
+                    lineHeight = 14.sp
+                )
             }
         }
         item {
@@ -1056,7 +1106,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
         item {
             SettingsCard("ABOUT DOWNLOAD STUDIO", "Local media downloader") {
                 Text("Developed by Amir Malik (2026)", color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Text("Version 0.1.6", color = TextMuted, fontSize = 10.sp)
+                Text("Version 0.1.11", color = TextMuted, fontSize = 10.sp)
             }
         }
         item {
@@ -1121,8 +1171,13 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
                 DetailLine("Status", friendlyStatus(item.status))
                 DetailLine("Download date", formatDownloadDate(item))
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
+                DetailLine("Downloaded", item.downloaded)
+                DetailLine("Total size", item.totalSize)
                 DetailLine("Speed", item.speed)
                 DetailLine("ETA", item.eta)
+                if (item.status == DownloadStatus.PROCESSING) {
+                    DetailLine("Processing stage", item.processingStage.ifBlank { "Finalizing media" })
+                }
                 DetailLine("Source", item.url)
                 if (item.outputPath.isNotBlank()) DetailLine("Saved file", item.outputPath)
                 if (item.error.isNotBlank()) Text(friendlyError(item.error), color = Red, fontSize = 11.sp)
@@ -1132,7 +1187,7 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
             Row {
                 if (item.status == DownloadStatus.DOWNLOADING) TextButton(onClick = { DownloadCoordinator.pause(item.id); onDismiss() }) { Text("Pause") }
                 if (item.status == DownloadStatus.PAUSED) TextButton(onClick = { DownloadCoordinator.resume(item.id); onDismiss() }) { Text("Resume") }
-                if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.QUEUED)) TextButton(onClick = { DownloadCoordinator.stop(item.id); onDismiss() }) { Text("Stop", color = Red) }
+                if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)) TextButton(onClick = { DownloadCoordinator.stop(item.id); onDismiss() }) { Text("Stop", color = Red) }
                 TextButton(onClick = onDismiss) { Text("Close") }
             }
         }
@@ -1157,7 +1212,7 @@ private fun friendlyStatus(status: DownloadStatus): String = when (status) {
     DownloadStatus.STARTING -> "Preparing"
     DownloadStatus.DOWNLOADING -> "Downloading"
     DownloadStatus.PAUSED -> "Paused"
-    DownloadStatus.PROCESSING -> "Finishing"
+    DownloadStatus.PROCESSING -> "Processing"
     DownloadStatus.COMPLETED -> "Saved"
     DownloadStatus.FAILED -> "Failed"
     DownloadStatus.STOPPED -> "Stopped"
