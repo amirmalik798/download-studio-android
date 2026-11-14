@@ -59,7 +59,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import androidx.lifecycle.lifecycleScope
 import com.downloadstudio.android.notifications.ShareDownloadNotification
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
@@ -87,13 +86,8 @@ class MainActivity : ComponentActivity() {
         DownloadCoordinator.initialize(this)
         ShareDownloadNotification.ensureChannel(this)
         requestNotificationPermissionIfNeeded()
-        ShareDownloadNotification.syncQueue(this, DownloadCoordinator.items.value)
+        ShareDownloadNotification.syncQueue(this)
         handleIncoming(intent)
-        lifecycleScope.launch {
-            DownloadCoordinator.items.collect { queue ->
-                ShareDownloadNotification.syncQueue(applicationContext, queue)
-            }
-        }
         setContent {
             val scheme = darkColorScheme(
                 primary = Blue, secondary = Cyan, tertiary = Violet,
