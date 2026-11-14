@@ -111,8 +111,12 @@ object StorageAccess {
             buildList {
                 while (rows.moveToNext()) {
                     val documentId = rows.getString(idColumn) ?: continue
-                    val displayName = rows.getString(nameColumn) ?: continue
-                    val mimeType = rows.getString(mimeColumn).orEmpty()
+                    val displayName = rows.getString(nameColumn)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: throw IllegalStateException("DocumentsProvider omitted a child document name.")
+                    val mimeType = rows.getString(mimeColumn)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: throw IllegalStateException("DocumentsProvider omitted a child MIME type.")
                     add(
                         TreeChild(
                             uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
