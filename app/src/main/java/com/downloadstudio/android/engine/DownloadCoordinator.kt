@@ -58,13 +58,19 @@ object DownloadCoordinator {
         initialized = true
         registerThermalGuard()
         scope.launch {
-            val inFlight = _items.value.filter { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED) }
-            inFlight.forEach { item ->
-                if (!active.containsKey(item.id)) {
-                    val monitor = scope.launch(start = CoroutineStart.LAZY) { monitorExisting(item) }
-                    active[item.id] = monitor
-                    monitor.start()
+            if (StorageAccess.isDownloadLocationConfigured(appContext) && _items.value.isEmpty()) {
+                QueueStore.restoreFromExternal(appContext)?.takeIf { it.isNotEmpty() }?.let { restored ->
+                    synchronized(stateLock) {
+                        if (_items.value.isEmpty()) {
+                            _items.value = restored
+                            QueueStore.save(appContext, restored)
+                        }
+                    }
                 }
+            }
+            if (StorageAccess.isDownloadLocationConfigured(appContext)) {
+                resumeExistingDownloads(_items.value)
+                QueueStore.mirrorBackup(appContext, _items.value, force = true)
             }
             if (currentThermalStatus >= THERMAL_STOP_THRESHOLD) pauseActiveForThermal()
             pump()
@@ -117,7 +123,42 @@ object DownloadCoordinator {
         pump()
     }
 
-    fun configurationChanged() = pump()
+    fun configurationChanged() {
+        if (!initialized) return
+        scope.launch {
+            if (!StorageAccess.isDownloadLocationConfigured(appContext)) return@launch
+            if (_items.value.isEmpty()) {
+                QueueStore.restoreFromExternal(appContext)?.takeIf { it.isNotEmpty() }?.let { restored ->
+                    synchronized(stateLock) {
+                        if (_items.value.isEmpty()) {
+                            _items.value = restored
+                            QueueStore.save(appContext, restored)
+                        }
+                    }
+                }
+            }
+            resumeExistingDownloads(_items.value)
+            QueueStore.mirrorBackup(appContext, _items.value, force = true)
+            pump()
+        }
+    }
+
+    private fun resumeExistingDownloads(items: List<DownloadItem>) {
+        items.filter {
+            it.status in setOf(
+                DownloadStatus.STARTING,
+                DownloadStatus.DOWNLOADING,
+                DownloadStatus.PROCESSING,
+                DownloadStatus.PAUSED
+            )
+        }.forEach { item ->
+            if (!active.containsKey(item.id)) {
+                val monitor = scope.launch(start = CoroutineStart.LAZY) { monitorExisting(item) }
+                active[item.id] = monitor
+                monitor.start()
+            }
+        }
+    }
 
     fun enqueue(url: String, mode: DownloadMode, title: String = "") : String {
         val cleaned = url.trim()
@@ -320,8 +361,17 @@ object DownloadCoordinator {
                     } else if (code == 0) {
                         val path = log.lineSequence().lastOrNull { it.startsWith("DS_COMPLETE:") }?.substringAfter("DS_COMPLETE:")?.trim().orEmpty()
                         update(id) {
-                            it.copy(status = DownloadStatus.COMPLETED, progress = 1f, speed = "—", eta = "—",
-                                downloaded = "Complete", outputPath = path, completedAt = System.currentTimeMillis(), error = "")
+                            it.copy(
+                                status = DownloadStatus.COMPLETED,
+                                progress = 1f,
+                                speed = "—",
+                                eta = "—",
+                                downloaded = it.totalSize.takeIf { size -> size != "—" } ?: it.downloaded,
+                                processingStage = "",
+                                outputPath = path,
+                                completedAt = System.currentTimeMillis(),
+                                error = ""
+                            )
                         }
                     } else {
                         val errorLine = log.lineSequence().lastOrNull { line ->
@@ -400,7 +450,19 @@ object DownloadCoordinator {
                         update(id) { it.copy(status = DownloadStatus.QUEUED, error = "Paused automatically because the device was too warm. It will resume after cooling.") }
                     } else if (code == 0) {
                         val path = log.lineSequence().lastOrNull { it.startsWith("DS_COMPLETE:") }?.substringAfter("DS_COMPLETE:")?.trim().orEmpty()
-                        update(id) { it.copy(status = DownloadStatus.COMPLETED, progress = 1f, speed = "—", eta = "—", downloaded = "Complete", outputPath = path, completedAt = System.currentTimeMillis(), error = "") }
+                        update(id) {
+                            it.copy(
+                                status = DownloadStatus.COMPLETED,
+                                progress = 1f,
+                                speed = "—",
+                                eta = "—",
+                                downloaded = it.totalSize.takeIf { size -> size != "—" } ?: it.downloaded,
+                                processingStage = "",
+                                outputPath = path,
+                                completedAt = System.currentTimeMillis(),
+                                error = ""
+                            )
+                        }
                     } else {
                         update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = "The previous Termux download exited with code $code.") }
                     }
@@ -443,16 +505,59 @@ object DownloadCoordinator {
                 )
             }
         }
+
+        val postprocessLine = log.lineSequence().lastOrNull { it.startsWith("DS_POSTPROCESS|") }
+        var postprocessingObserved = false
+        if (postprocessLine != null) {
+            val postParts = postprocessLine.split('|')
+            val postStatus = postParts.getOrNull(1)?.trim()?.lowercase().orEmpty()
+            val processor = postParts.getOrNull(2)?.trim().orEmpty()
+            if (postStatus in setOf("started", "processing", "finished")) {
+                postprocessingObserved = true
+                val stage = when (processor.lowercase()) {
+                    "merger" -> "Merging video and audio"
+                    "extractaudio" -> "Converting audio to MP3"
+                    "embedthumbnail" -> "Embedding thumbnail"
+                    "metadata" -> "Writing media metadata"
+                    "videoremuxer" -> "Finalizing video container"
+                    "videoconvertor" -> "Converting video"
+                    else -> if (postStatus == "finished") "Finalizing media" else "Processing media"
+                }
+                update(id) { current ->
+                    if (current.status in setOf(DownloadStatus.PAUSED, DownloadStatus.STOPPED, DownloadStatus.QUEUED)) current
+                    else current.copy(
+                        status = DownloadStatus.PROCESSING,
+                        progress = maxOf(current.progress, 1f),
+                        speed = "—",
+                        eta = "—",
+                        processingStage = if (postStatus == "finished") "Finalizing media" else stage
+                    )
+                }
+            }
+        }
+
         val line = log.lineSequence().lastOrNull { it.startsWith("DS_PROGRESS|") } ?: return
         val parts = line.split('|')
-        if (parts.size < 6) return
+        if (parts.size < 5) return
         val percent = parts[1].filter { it.isDigit() || it == '.' }.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) ?: 0f
         val speed = parts[2].trim().ifBlank { "—" }
         val eta = parts[3].trim().ifBlank { "—" }
-        val downloaded = humanBytes(parts[4].trim().toLongOrNull() ?: 0L)
+        val downloadedBytes = parts[4].trim().toLongOrNull() ?: 0L
+        val totalBytes = parts.getOrNull(5)?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+            ?: parts.getOrNull(6)?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+        val downloaded = humanBytes(downloadedBytes)
+        val totalSize = totalBytes?.let(::humanBytes)
         update(id) { current ->
-            if (current.status == DownloadStatus.PAUSED || current.status == DownloadStatus.STOPPED || current.status == DownloadStatus.QUEUED) current
-            else current.copy(status = DownloadStatus.DOWNLOADING, progress = percent, speed = speed, eta = eta, downloaded = downloaded)
+            if (current.status in setOf(DownloadStatus.PAUSED, DownloadStatus.STOPPED, DownloadStatus.QUEUED)) current
+            else current.copy(
+                status = if (postprocessingObserved || current.status == DownloadStatus.PROCESSING) DownloadStatus.PROCESSING else DownloadStatus.DOWNLOADING,
+                progress = if (postprocessingObserved) maxOf(current.progress, percent) else percent,
+                speed = if (postprocessingObserved) "—" else speed,
+                eta = if (postprocessingObserved) "—" else eta,
+                downloaded = downloaded,
+                totalSize = totalSize ?: current.totalSize,
+                processingStage = if (postprocessingObserved) current.processingStage else ""
+            )
         }
     }
 
