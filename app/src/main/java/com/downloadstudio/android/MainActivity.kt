@@ -1087,7 +1087,15 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
     var maxConcurrent by remember { mutableIntStateOf(QueueStore.maxConcurrent(context)) }
     var termuxInstalled by remember { mutableStateOf(TermuxBridge.isInstalled(context)) }
     var termuxPermission by remember { mutableStateOf(TermuxBridge.hasRunPermission(context)) }
+    var notificationsAllowed by remember { mutableStateOf(LinkStatusNotification.canPost(context)) }
     var engineStatus by remember { mutableStateOf("Not checked") }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            notificationsAllowed = LinkStatusNotification.canPost(context)
+            delay(750)
+        }
+    }
     val clipboard = LocalClipboardManager.current
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -1136,6 +1144,35 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                             Text("Your download folder and Termux connection are configured.", color = TextMuted, fontSize = 10.sp)
                         }
                     }
+                }
+            }
+        }
+        item {
+            SettingsCard(
+                "NOTIFICATIONS",
+                "Allow Download Studio to confirm shared links in your Android notification shade."
+            ) {
+                StatusLine(
+                    "Shared-link notifications",
+                    notificationsAllowed,
+                    if (notificationsAllowed) "Enabled" else "Permission or notifications disabled"
+                )
+                Button(
+                    onClick = {
+                        val settingsIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        }
+                        runCatching { context.startActivity(settingsIntent) }
+                            .onFailure {
+                                Toast.makeText(context, "Open Android Settings → Apps → Download Studio → Notifications.", Toast.LENGTH_LONG).show()
+                            }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Panel2)
+                ) {
+                    Icon(Icons.Default.NotificationsActive, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (notificationsAllowed) "Manage notification settings" else "Enable notifications")
                 }
             }
         }
