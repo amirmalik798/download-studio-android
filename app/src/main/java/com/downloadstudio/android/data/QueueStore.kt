@@ -166,6 +166,7 @@ object QueueStore {
                 put("thumbnailUrl", item.thumbnailUrl)
                 put("durationSeconds", item.durationSeconds)
                 put("shareReady", item.shareReady)
+                put("shareState", item.shareState?.name ?: JSONObject.NULL)
             })
         }
     }.toString()
