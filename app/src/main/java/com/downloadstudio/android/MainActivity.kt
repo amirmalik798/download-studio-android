@@ -47,6 +47,7 @@ import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.engine.DownloadCoordinator
+import com.downloadstudio.android.notifications.LinkMetadataResolver
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.Dispatchers
@@ -89,7 +90,11 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = scheme) {
                 DownloadStudioRoot(
                     onIncomingUrl = { url, mode ->
-                        runCatching { DownloadCoordinator.enqueue(url, mode); Unit }
+                        runCatching {
+                            val itemId = DownloadCoordinator.enqueueForChoice(url, mode)
+                            LinkMetadataResolver.resolve(this, itemId, url, updateNotification = false)
+                            Unit
+                        }
                     }
                 )
             }
@@ -501,15 +506,37 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 dismissButton = { TextButton(onClick = { showClearConfirmation = false }) { Text("Cancel") } })
         }
         itemPendingRemoval?.let { item ->
-            AlertDialog(onDismissRequest = { itemPendingRemoval = null }, containerColor = Panel,
-                title = { Text("Remove from downloads?", color = TextMain) },
-                text = { Text("\"${displayTitle(item)}\" will be removed from Download Studio. The actual media file on your device will not be deleted.", color = TextMuted) },
-                confirmButton = {
-                    TextButton(onClick = { DownloadCoordinator.remove(item.id); itemPendingRemoval = null }) {
-                        Text("Remove", color = Red)
-                    }
+            AlertDialog(
+                onDismissRequest = { itemPendingRemoval = null },
+                containerColor = Panel,
+                shape = RoundedCornerShape(22.dp),
+                tonalElevation = 0.dp,
+                icon = { Icon(Icons.Default.DeleteOutline, null, tint = Red, modifier = Modifier.size(24.dp)) },
+                title = { Text("Discard this queue entry?", color = TextMain, fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        "\"${displayTitle(item)}\" will be removed from Download Studio. Any media file already saved on your device will remain untouched.",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
+                    )
                 },
-                dismissButton = { TextButton(onClick = { itemPendingRemoval = null }) { Text("Cancel") } })
+                confirmButton = {
+                    Button(
+                        onClick = { DownloadCoordinator.remove(item.id); itemPendingRemoval = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = Red, contentColor = Color.White),
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text("Discard entry", fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = { itemPendingRemoval = null },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Line)
+                    ) { Text("Keep entry") }
+                }
+            )
         }
         Spacer(Modifier.height(5.dp))
         when {
@@ -555,10 +582,10 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         val isVideo = item.mode == DownloadMode.VIDEO
-                        Box(Modifier.clip(CircleShape).background((if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
-                            Text(if (isVideo) "VIDEO" else "AUDIO", color = if (isVideo) Blue else Green, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                        Box(Modifier.clip(CircleShape).background((if (item.awaitingChoice) Violet else if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
+                            Text(if (item.awaitingChoice) "LINK" else if (isVideo) "VIDEO" else "AUDIO", color = if (item.awaitingChoice) Violet else if (isVideo) Blue else Green, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                         }
-                        Text(mediaSiteName(item.url), color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(item.sourceName.ifBlank { mediaSiteName(item.url) }, color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
@@ -629,6 +656,43 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     }
                 }
             }
+            if (item.awaitingChoice) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Choose a format", color = TextMuted, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                    IconButton(
+                        onClick = { DownloadCoordinator.chooseLinkDownload(item.id, DownloadMode.VIDEO) },
+                        modifier = Modifier.size(42.dp).clip(RoundedCornerShape(12.dp))
+                            .background(Blue.copy(alpha = .18f))
+                            .border(1.dp, Blue.copy(alpha = .55f), RoundedCornerShape(12.dp))
+                    ) { Icon(Icons.Default.VideoLibrary, "Download video", tint = Blue, modifier = Modifier.size(21.dp)) }
+                    IconButton(
+                        onClick = { DownloadCoordinator.chooseLinkDownload(item.id, DownloadMode.AUDIO) },
+                        modifier = Modifier.size(42.dp).clip(RoundedCornerShape(12.dp))
+                            .background(Green.copy(alpha = .16f))
+                            .border(1.dp, Green.copy(alpha = .5f), RoundedCornerShape(12.dp))
+                    ) { Icon(Icons.Default.MusicNote, "Download audio", tint = Green, modifier = Modifier.size(21.dp)) }
+                    IconButton(
+                        onClick = { onRemoveRequest?.invoke() },
+                        modifier = Modifier.size(42.dp).clip(RoundedCornerShape(12.dp))
+                            .background(Red.copy(alpha = .14f))
+                            .border(1.dp, Red.copy(alpha = .45f), RoundedCornerShape(12.dp))
+                    ) { Icon(Icons.Default.DeleteOutline, "Discard link", tint = Red, modifier = Modifier.size(20.dp)) }
+                }
+                val details = buildList {
+                    if (item.durationSeconds > 0L) add(formatPreviewDuration(item.durationSeconds))
+                    if (item.estimatedSizeBytes > 0L) add(formatBytesLabel(item.estimatedSizeBytes))
+                }.joinToString(" · ")
+                Text(
+                    details.ifBlank { "Link accepted · Details may still be loading" },
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
+            }
+
             when (item.status) {
                 DownloadStatus.STARTING -> {
                     Text("Preparing download…", color = TextMuted, fontSize = 10.sp)
@@ -1343,6 +1407,18 @@ private data class PreviewMetadata(
     val thumbnailUrl: String = "",
     val durationSeconds: Long = 0L
 )
+
+private fun formatBytesLabel(bytes: Long): String {
+    if (bytes <= 0L) return "Size unavailable"
+    val units = listOf("B", "KB", "MB", "GB", "TB")
+    var value = bytes.toDouble()
+    var index = 0
+    while (value >= 1024 && index < units.lastIndex) {
+        value /= 1024
+        index++
+    }
+    return "%.1f %s".format(value, units[index])
+}
 
 private fun mediaSiteName(rawUrl: String): String {
     val host = runCatching { Uri.parse(rawUrl).host?.lowercase(Locale.ROOT)?.removePrefix("www.") }.getOrNull().orEmpty()
