@@ -41,7 +41,11 @@ object LinkStatusNotification {
 
     private val executor = Executors.newFixedThreadPool(2)
     private val pendingImages = ConcurrentHashMap.newKeySet<String>()
-    private val bitmapCache = LruCache<String, Bitmap>(8)
+    // Bound cache memory by decoded bitmap size instead of entry count.
+    private val bitmapCache = object : LruCache<String, Bitmap>(6 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int =
+            (value.byteCount / 1024).coerceAtLeast(1)
+    }
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -233,9 +237,24 @@ object LinkStatusNotification {
                     }
                     output.toByteArray()
                 }
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
                 val maxDimension = 640
+                var sampleSize = 1
+                while (bounds.outWidth / sampleSize > maxDimension ||
+                    bounds.outHeight / sampleSize > maxDimension
+                ) {
+                    sampleSize *= 2
+                }
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
                 if (bitmap.width <= maxDimension && bitmap.height <= maxDimension) return bitmap
+
                 val scale = minOf(maxDimension.toFloat() / bitmap.width, maxDimension.toFloat() / bitmap.height)
                 return Bitmap.createScaledBitmap(
                     bitmap,
