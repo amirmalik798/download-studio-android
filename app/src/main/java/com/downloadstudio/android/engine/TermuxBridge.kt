@@ -70,7 +70,8 @@ object TermuxBridge {
             "clean=lambda v: str(v or '').replace('\\r',' ').replace('\\n',' ').strip(); " +
             "print('DS_TITLE:'+clean(d.get('title'))); " +
             "print('DS_THUMBNAIL:'+clean(d.get('thumbnail'))); " +
-            "print('DS_DURATION:'+clean(d.get('duration')))"
+            "print('DS_DURATION:'+clean(d.get('duration'))); " +
+            "print('DS_SIZE:'+clean(d.get('filesize_approx') or d.get('filesize') or 0))"
         return "mkdir -p ${q(stateDir)}; " +
             "rm -f ${q(raw)} ${q(temp)}; printf 'PENDING\\n' > ${q(result)}; " +
             "if timeout 24s yt-dlp --ignore-config --no-warnings --no-playlist --skip-download --dump-single-json " +
