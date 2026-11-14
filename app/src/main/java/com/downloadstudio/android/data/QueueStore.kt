@@ -13,6 +13,7 @@ object QueueStore {
     private const val SETTINGS_PREFS = "download_studio_store"
     private const val QUEUE_PREFS = "download_studio_queue"
     private const val KEY_QUEUE = "queue_v2"
+    private const val KEY_DISCARDED_IDS = "discarded_queue_ids_v1"
     private const val KEY_MAX = "max_concurrent"
     private const val KEY_LAST_DESTINATION = "last_destination_path"
 
@@ -23,6 +24,7 @@ object QueueStore {
     private const val BACKUP_FILE = "queue_backup.json"
 
     private val migrationLock = Any()
+    private val discardLock = Any()
     private val backupLock = Any()
     @Volatile private var lastExternalFingerprint: String? = null
     private val backupExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -32,14 +34,43 @@ object QueueStore {
     fun load(context: Context): List<DownloadItem> {
         migrateLegacyPreferences(context)
         val raw = queuePrefs(context).getString(KEY_QUEUE, "[]") ?: "[]"
-        return decodeQueue(raw)
+        return decodeQueue(raw).filterNot { isDiscarded(context, it.id) }
+    }
+
+    /**
+     * A discard tombstone prevents an old worker or restored external snapshot
+     * from resurrecting an item after its notification has been removed.
+     * This metadata lives beside the canonical queue in the same preferences file.
+     */
+    fun markDiscarded(context: Context, ids: Collection<String>) {
+        val cleanIds = ids.filter { it.isNotBlank() }.toSet()
+        if (cleanIds.isEmpty()) return
+        migrateLegacyPreferences(context)
+        synchronized(discardLock) {
+            val prefs = queuePrefs(context)
+            val discarded = prefs.getStringSet(KEY_DISCARDED_IDS, emptySet())
+                .orEmpty().toMutableSet()
+            if (discarded.addAll(cleanIds)) {
+                check(prefs.edit().putStringSet(KEY_DISCARDED_IDS, discarded.toSet()).commit()) {
+                    "Unable to persist discarded download records."
+                }
+            }
+        }
+    }
+
+    fun isDiscarded(context: Context, id: String): Boolean {
+        if (id.isBlank()) return false
+        return synchronized(discardLock) {
+            id in queuePrefs(context).getStringSet(KEY_DISCARDED_IDS, emptySet()).orEmpty()
+        }
     }
 
     fun save(context: Context, items: List<DownloadItem>) {
         migrateLegacyPreferences(context)
-        val raw = encodeQueue(items).toString()
+        val currentItems = items.filterNot { isDiscarded(context, it.id) }
+        val raw = encodeQueue(currentItems).toString()
         queuePrefs(context).edit().putString(KEY_QUEUE, raw).apply()
-        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(items), force = false)
+        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(currentItems), force = false)
     }
 
     /**
@@ -66,13 +97,14 @@ object QueueStore {
         val raw = context.contentResolver.openInputStream(backup.uri)
             ?.bufferedReader(Charsets.UTF_8)
             ?.use { it.readText() } ?: return null
-        decodeQueue(raw)
+        decodeQueue(raw).filterNot { isDiscarded(context, it.id) }
     }.getOrNull()
 
     /** Force a fresh local snapshot after a folder is selected or a queue is restored. */
     fun mirrorBackup(context: Context, items: List<DownloadItem>, force: Boolean = true) {
-        val raw = encodeQueue(items).toString()
-        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(items), force)
+        val currentItems = items.filterNot { isDiscarded(context, it.id) }
+        val raw = encodeQueue(currentItems).toString()
+        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(currentItems), force)
     }
 
     private fun decodeQueue(raw: String): List<DownloadItem> = runCatching {
