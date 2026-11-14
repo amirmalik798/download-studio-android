@@ -55,7 +55,18 @@ object DownloadCoordinator {
         if (initialized) return
         appContext = context.applicationContext
         maxConcurrent = QueueStore.maxConcurrent(appContext)
-        _items.value = QueueStore.load(appContext)
+        val loaded = QueueStore.load(appContext)
+        val recovered = loaded.map { item ->
+            if (item.status == DownloadStatus.PREVIEWING) {
+                item.copy(
+                    status = DownloadStatus.AWAITING_ACTION,
+                    shareReady = false,
+                    error = "The media preview was interrupted. Share this link again to refresh its details."
+                )
+            } else item
+        }
+        _items.value = recovered
+        if (recovered != loaded) QueueStore.save(appContext, recovered)
         initialized = true
         registerThermalGuard()
         scope.launch {
@@ -162,8 +173,76 @@ object DownloadCoordinator {
         }
     }
 
+    /**
+     * Shared links are persisted queue records. Notifications are a projection
+     * of these records and do not own a second copy of link or download state.
+     */
+    fun addSharedLink(url: String): String {
+        val cleaned = url.trim()
+        require(cleaned.startsWith("https://", true) || cleaned.startsWith("http://", true)) {
+            "Please share a valid HTTP or HTTPS media link."
+        }
+        require(android.net.Uri.parse(cleaned).host?.isNotBlank() == true) {
+            "The shared link does not contain a valid host."
+        }
+        val id = UUID.randomUUID().toString().replace("-", "").take(12)
+        val item = DownloadItem(
+            id = id, url = cleaned, title = "Checking media details…",
+            mode = DownloadMode.CHOOSE, status = DownloadStatus.PREVIEWING, shareReady = false
+        )
+        val snapshot = synchronized(stateLock) {
+            _items.value = _items.value + item
+            QueueStore.save(appContext, _items.value)
+            _items.value.toList()
+        }
+        ShareDownloadNotification.syncQueue(appContext, snapshot)
+        return id
+    }
+
+    fun updateSharedLinkPreview(
+        id: String, title: String, thumbnailUrl: String, durationSeconds: Long,
+        estimatedSizeBytes: Long, shareReady: Boolean, error: String = ""
+    ) {
+        update(id) { current ->
+            if (current.status != DownloadStatus.PREVIEWING) current
+            else current.copy(
+                status = DownloadStatus.AWAITING_ACTION,
+                title = title.ifBlank { "Shared media link" },
+                thumbnailUrl = thumbnailUrl.takeIf {
+                    it.startsWith("https://", true) || it.startsWith("http://", true)
+                }.orEmpty(),
+                durationSeconds = durationSeconds.coerceAtLeast(0L),
+                totalSize = estimatedSizeBytes.takeIf { it > 0L }?.let { "≈ " + humanBytes(it) } ?: "—",
+                shareReady = shareReady,
+                error = error
+            )
+        }
+    }
+
+    /** Select a format on the shared-link record; do not create a duplicate queue row. */
+    fun startSharedDownload(id: String, mode: DownloadMode): Boolean {
+        if (mode == DownloadMode.CHOOSE) return false
+        val current = _items.value.firstOrNull { it.id == id } ?: return false
+        if (current.status != DownloadStatus.AWAITING_ACTION || !current.shareReady) return false
+        update(id) { item ->
+            if (item.status != DownloadStatus.AWAITING_ACTION || !item.shareReady) item
+            else item.copy(
+                mode = mode, status = DownloadStatus.QUEUED, shareReady = false,
+                progress = 0f, speed = "—", eta = "—", downloaded = "—", error = ""
+            )
+        }
+        val started = _items.value.any {
+            it.id == id && it.mode == mode && it.status in setOf(
+                DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING
+            )
+        }
+        if (started) pump()
+        return started
+    }
+
     fun enqueue(url: String, mode: DownloadMode, title: String = "", thumbnailUrl: String = "", durationSeconds: Long = 0L, estimatedSizeBytes: Long = 0L) : String {
         val cleaned = url.trim()
+        require(mode != DownloadMode.CHOOSE) { "Choose video or audio before starting a download." }
         require(cleaned.startsWith("https://") || cleaned.startsWith("http://")) { "Please provide a valid HTTP or HTTPS link." }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val item = DownloadItem(
@@ -172,10 +251,12 @@ object DownloadCoordinator {
             durationSeconds = durationSeconds.coerceAtLeast(0L),
             totalSize = estimatedSizeBytes.takeIf { it > 0L }?.let { "≈ " + humanBytes(it) } ?: "—"
         )
-        synchronized(stateLock) {
+        val snapshot = synchronized(stateLock) {
             _items.value = _items.value + item
             QueueStore.save(appContext, _items.value)
+            _items.value.toList()
         }
+        ShareDownloadNotification.syncQueue(appContext, snapshot)
         pump()
         return id
     }
@@ -244,19 +325,23 @@ object DownloadCoordinator {
         if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)) {
             stop(id)
         }
-        synchronized(stateLock) {
+        val snapshot = synchronized(stateLock) {
             _items.value = _items.value.filterNot { it.id == id }
             QueueStore.save(appContext, _items.value)
+            _items.value.toList()
         }
+        ShareDownloadNotification.syncQueue(appContext, snapshot)
     }
 
     fun clearFinished() {
-        synchronized(stateLock) {
+        val snapshot = synchronized(stateLock) {
             _items.value = _items.value.filterNot {
                 it.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.STOPPED)
             }
             QueueStore.save(appContext, _items.value)
+            _items.value.toList()
         }
+        ShareDownloadNotification.syncQueue(appContext, snapshot)
     }
 
     fun clearAll() {
@@ -274,6 +359,7 @@ object DownloadCoordinator {
             QueueStore.save(appContext, emptyList())
             ids
         }
+        ShareDownloadNotification.syncQueue(appContext, emptyList())
 
         idsToStop.forEach { id ->
             cancelled.add(id)
