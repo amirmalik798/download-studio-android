@@ -51,7 +51,6 @@ import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.engine.DownloadCoordinator
-import com.downloadstudio.android.notifications.LinkMetadataResolver
 import com.downloadstudio.android.notifications.LinkStatusNotification
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
@@ -134,11 +133,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = scheme) {
                 DownloadStudioRoot(
                     onIncomingUrl = { url, mode ->
-                        runCatching {
-                            val itemId = DownloadCoordinator.enqueueForChoice(url, mode)
-                            LinkMetadataResolver.resolve(this, itemId, url, updateNotification = false)
-                            Unit
-                        }
+                        runCatching { DownloadCoordinator.enqueue(url, mode); Unit }
                     }
                 )
             }
@@ -466,6 +461,14 @@ private fun ShareFeatureCard() {
     }
 }
 
+private enum class DownloadSort(val label: String) {
+    NEWEST_ARRIVALS("Newest arrivals first"),
+    NAME_ASC("Name · A–Z"),
+    NAME_DESC("Name · Z–A"),
+    DATE_NEWEST("Date · Newest first"),
+    DATE_OLDEST("Date · Oldest first")
+}
+
 private enum class DownloadFilter(val label: String) {
     ALL("All"),
     ACTIVE("Active"),
@@ -482,6 +485,8 @@ private enum class DownloadFilter(val label: String) {
 private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem) -> Unit) {
     var search by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(DownloadFilter.ALL) }
+    var sort by remember { mutableStateOf(DownloadSort.NEWEST_ARRIVALS) }
+    var sortExpanded by remember { mutableStateOf(false) }
     var advancedFilters by remember { mutableStateOf(false) }
     var helpOpen by remember { mutableStateOf(false) }
     var showClearConfirmation by remember { mutableStateOf(false) }
@@ -515,35 +520,43 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
         DownloadFilter.TODAY to items.count { it.createdAt >= todayStart }
     )
 
-    val visibleItems = remember(items, search, filter, todayStart) {
-        items.asSequence()
-            .filter { item ->
-                val matchesFilter = when (filter) {
-                    DownloadFilter.ALL -> true
-                    DownloadFilter.ACTIVE -> item.status in setOf(
-                        DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED
-                    )
-                    DownloadFilter.QUEUED -> item.awaitingChoice || item.status == DownloadStatus.QUEUED
-                    DownloadFilter.DOWNLOADING -> item.status in setOf(
-                        DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING
-                    )
-                    DownloadFilter.COMPLETED -> item.status == DownloadStatus.COMPLETED
-                    DownloadFilter.FAILED -> item.status in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED)
-                    DownloadFilter.VIDEO -> item.awaitingChoice || item.mode == DownloadMode.VIDEO
-                    DownloadFilter.AUDIO -> item.awaitingChoice || item.mode == DownloadMode.AUDIO
-                    DownloadFilter.TODAY -> item.createdAt >= todayStart
-                }
-                val query = search.trim()
-                matchesFilter && (
-                    query.isBlank() ||
-                        displayTitle(item).contains(query, ignoreCase = true) ||
-                        item.sourceName.contains(query, ignoreCase = true) ||
-                        item.url.contains(query, ignoreCase = true)
-                    )
+    val visibleItems = remember(items, search, filter, todayStart, sort) {
+        val matches = items.filter { item ->
+            val matchesFilter = when (filter) {
+                DownloadFilter.ALL -> true
+                DownloadFilter.ACTIVE -> item.status in setOf(
+                    DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED
+                )
+                DownloadFilter.QUEUED -> item.awaitingChoice || item.status == DownloadStatus.QUEUED
+                DownloadFilter.DOWNLOADING -> item.status in setOf(
+                    DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING
+                )
+                DownloadFilter.COMPLETED -> item.status == DownloadStatus.COMPLETED
+                DownloadFilter.FAILED -> item.status in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED)
+                DownloadFilter.VIDEO -> item.awaitingChoice || item.mode == DownloadMode.VIDEO
+                DownloadFilter.AUDIO -> item.awaitingChoice || item.mode == DownloadMode.AUDIO
+                DownloadFilter.TODAY -> item.createdAt >= todayStart
             }
-            // Arrival time never changes when status or progress changes.
-            .sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
-            .toList()
+            val query = search.trim()
+            matchesFilter && (
+                query.isBlank() ||
+                    displayTitle(item).contains(query, ignoreCase = true) ||
+                    item.sourceName.contains(query, ignoreCase = true) ||
+                    item.url.contains(query, ignoreCase = true)
+                )
+        }
+        when (sort) {
+            DownloadSort.NEWEST_ARRIVALS ->
+                matches.sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+            DownloadSort.NAME_ASC ->
+                matches.sortedBy { displayTitle(it).lowercase(Locale.ROOT) }
+            DownloadSort.NAME_DESC ->
+                matches.sortedByDescending { displayTitle(it).lowercase(Locale.ROOT) }
+            DownloadSort.DATE_NEWEST ->
+                matches.sortedByDescending { downloadTimestamp(it) }
+            DownloadSort.DATE_OLDEST ->
+                matches.sortedBy { downloadTimestamp(it) }
+        }
     }
 
     Column(
@@ -637,11 +650,32 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                     DownloadFilterChip(filter, DownloadFilter.TODAY, counts) { filter = it }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Newest arrivals first", color = TextMain, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Text("SORT BY", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
                     Spacer(Modifier.weight(1f))
-                    Text("Fixed order", color = Cyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Box {
+                        TextButton(onClick = { sortExpanded = true }) {
+                            Icon(Icons.Default.Sort, null, tint = Cyan, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(sort.label, color = Cyan, fontSize = 11.sp)
+                            Icon(Icons.Default.ArrowDropDown, null, tint = Cyan)
+                        }
+                        DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
+                            DownloadSort.values().forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label, color = TextMain) },
+                                    onClick = { sort = option; sortExpanded = false }
+                                )
+                            }
+                        }
+                    }
                 }
-                Text("A download keeps its position even when its status changes.", color = TextMuted, fontSize = 10.sp)
+                Text(
+                    if (sort == DownloadSort.NEWEST_ARRIVALS)
+                        "A download keeps its arrival position when its status changes."
+                    else "Sort the list without changing saved downloads or queue state.",
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
             }
         }
 
