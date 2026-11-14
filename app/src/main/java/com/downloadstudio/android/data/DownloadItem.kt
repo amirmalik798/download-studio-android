@@ -22,7 +22,8 @@ data class DownloadItem(
     val sourceName: String = "",
     val durationSeconds: Long = 0L,
     val estimatedSizeBytes: Long = 0L,
-    val notificationEligible: Boolean = false
+    val notificationEligible: Boolean = false,
+    val runToken: String = ""
 )
 
 enum class DownloadMode { VIDEO, AUDIO }
