@@ -237,7 +237,6 @@ class ShareLinkActivity : ComponentActivity() {
                     false,
                     "The link could not be verified as a public HTTPS media URL."
                 )
-                runOnUiThread { finish() }
                 return@Thread
             }
 
@@ -258,8 +257,8 @@ class ShareLinkActivity : ComponentActivity() {
                 extracted.sizeBytes,
                 true
             )
-            runOnUiThread { finish() }
         }, "DownloadStudio-share-preview").start()
+        finish()
     }
 
     private fun extractSharedUrl(source: Intent?): String? {
