@@ -18,6 +18,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
@@ -28,6 +30,7 @@ import kotlinx.coroutines.launch
 class DownloadMonitorService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var observation: Job? = null
+    private var folderSync: Job? = null
     private var foregroundStarted = false
 
     override fun onCreate() {
@@ -50,6 +53,13 @@ class DownloadMonitorService : Service() {
 
         DownloadCoordinator.onMonitorServiceStarted()
         DownloadCoordinator.initialize(applicationContext)
+        folderSync?.cancel()
+        folderSync = serviceScope.launch {
+            while (isActive) {
+                delay(60_000L)
+                DownloadCoordinator.synchronizeDownloadsFolder()
+            }
+        }
         observation?.cancel()
         observation = serviceScope.launch {
             DownloadCoordinator.items.collect { items ->
@@ -139,6 +149,7 @@ class DownloadMonitorService : Service() {
 
     override fun onDestroy() {
         observation?.cancel()
+        folderSync?.cancel()
         serviceScope.cancel()
         DownloadCoordinator.onMonitorServiceStopped()
         super.onDestroy()
