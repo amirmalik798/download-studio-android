@@ -68,13 +68,14 @@ object QueueStore {
         val raw = context.contentResolver.openInputStream(backup.uri)
             ?.bufferedReader(Charsets.UTF_8)
             ?.use { it.readText() } ?: return null
-        decodeQueue(raw)
+        decodeQueue(raw).sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
     }.getOrNull()
 
     /** Force a fresh local snapshot after a folder is selected or a queue is restored. */
     fun mirrorBackup(context: Context, items: List<DownloadItem>, force: Boolean = true) {
-        val raw = encodeQueue(items).toString()
-        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(items), force)
+        val ordered = items.sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+        val raw = encodeQueue(ordered).toString()
+        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(ordered), force)
     }
 
     private fun decodeQueue(raw: String): List<DownloadItem> = runCatching {
