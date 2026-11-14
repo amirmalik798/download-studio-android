@@ -86,8 +86,10 @@ object TermuxBridge {
             "rm -f ${q(raw)} ${q(temp)}"
     }
 
-    fun downloadScript(id: String, url: String, mode: String, destination: String): String {
+    fun downloadScript(id: String, url: String, mode: String, destination: String, runToken: String = ""): String {
         require(id.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid download id." }
+        require(runToken.isBlank() || runToken.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid execution token." }
+        val executionKey = if (runToken.isBlank()) id else "$id-$runToken"
         require(mode == "VIDEO" || mode == "AUDIO") { "Unsupported download format." }
         val uri = Uri.parse(url)
         require(url.length <= 4096 && (uri.scheme == "https" || uri.scheme == "http") &&
@@ -96,9 +98,9 @@ object TermuxBridge {
         require(destination.startsWith("/")) { "Invalid download folder." }
         val q = ::shellQuote
         val stateDir = "$destination/DownloadStudioState"
-        val log = "$stateDir/$id.log"
-        val pid = "$stateDir/$id.pid"
-        val exit = "$stateDir/$id.exit"
+        val log = "$stateDir/$executionKey.log"
+        val pid = "$stateDir/$executionKey.pid"
+        val exit = "$stateDir/$executionKey.exit"
         // Keep titles short enough for Android/Linux filename limits, including Unicode titles.
         val output = "$destination/%(title).40s-%(id)s.%(ext)s"
         val common = "--newline --progress --concurrent-fragments 1 --ignore-config --no-playlist --continue -o ${q(output)} " +
@@ -134,10 +136,12 @@ object TermuxBridge {
             "printf '%s' \"\$ds_code\" > " + q(exit) + "; exit \"\$ds_code\""
     }
 
-    fun signalScript(destination: String, id: String, signal: String): String {
+    fun signalScript(destination: String, id: String, signal: String, runToken: String = ""): String {
         require(id.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid download id." }
+        require(runToken.isBlank() || runToken.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid execution token." }
         require(signal in setOf("STOP", "CONT", "INT", "TERM"))
-        val pidFile = "$destination/DownloadStudioState/$id.pid"
+        val executionKey = if (runToken.isBlank()) id else "$id-$runToken"
+        val pidFile = "$destination/DownloadStudioState/$executionKey.pid"
         return "ds_n=0; while [ ! -f ${shellQuote(pidFile)} ] && [ \"\$ds_n\" -lt 20 ]; do sleep 0.25; ds_n=\$((ds_n+1)); done; " +
             "if [ -f ${shellQuote(pidFile)} ]; then ds_pid=\$(cat ${shellQuote(pidFile)}); " +
             "case \"\$ds_pid\" in *[!0-9]*) exit 0 ;; esac; [ -n \"\$ds_pid\" ] || exit 0; " +
