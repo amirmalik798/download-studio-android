@@ -10,6 +10,8 @@ data class DownloadItem(
     val speed: String = "—",
     val eta: String = "—",
     val downloaded: String = "—",
+    val totalSize: String = "—",
+    val processingStage: String = "",
     val format: String = "",
     val outputPath: String = "",
     val error: String = "",
