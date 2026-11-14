@@ -441,6 +441,7 @@ object DownloadCoordinator {
                 eta = "—",
                 downloaded = "—",
                 outputPath = "",
+                runToken = "",
                 error = ""
             )
         }
@@ -474,7 +475,7 @@ object DownloadCoordinator {
         // Close the queue pump gate before taking the snapshot. Workers that finish
         // during this operation must not launch another queued item.
         bulkClearing = true
-        val idsToClear = synchronized(stateLock) {
+        val clearSnapshot = synchronized(stateLock) {
             val notificationIds = _items.value.map { it.id }
             val ids = (active.keys + _items.value.filter {
                 it.status in setOf(
@@ -482,30 +483,38 @@ object DownloadCoordinator {
                     DownloadStatus.PAUSED, DownloadStatus.PROCESSING
                 )
             }.map { it.id }).toSet()
+            val runTokens = _items.value.associate { it.id to it.runToken }
             _items.value = emptyList()
             QueueStore.save(appContext, emptyList(), durable = true)
-            ids to notificationIds
+            Triple(ids, notificationIds, runTokens)
         }
-        idsToClear.second.forEach {
+        clearSnapshot.second.forEach {
             LinkMetadataResolver.cancel(appContext, it)
             LinkStatusNotification.cancel(appContext, it)
         }
-        val idsToStop = idsToClear.first
 
-        idsToStop.forEach { id ->
+        clearSnapshot.first.forEach { id ->
             cancelled.add(id)
             thermalDeferred.remove(id)
-            signal(id, "INT")
+            signal(id, "INT", clearSnapshot.third[id].orEmpty())
             active[id]?.cancel()
         }
         // No queued records remain; a later enqueue can safely restart the pump.
         bulkClearing = false
     }
 
-    private fun signal(id: String, signal: String) {
+    private fun signal(id: String, signal: String, runTokenOverride: String? = null) {
+        val item = _items.value.firstOrNull { it.id == id }
+        if (item == null && runTokenOverride == null) return
+        val runToken = runTokenOverride ?: item?.runToken.orEmpty()
         val dest = StorageAccess.destinationPath(appContext) ?: return
         scope.launch {
-            TermuxBridge.runShell(appContext, TermuxBridge.signalScript(dest, id, signal), "Download Studio · $signal", true)
+            TermuxBridge.runShell(
+                appContext,
+                TermuxBridge.signalScript(dest, id, signal, runToken),
+                "Download Studio · $signal",
+                true
+            )
         }
     }
 
@@ -549,21 +558,32 @@ object DownloadCoordinator {
             // The previous attempt may have been interrupted by thermal protection.
             // Clear that marker only after the thermal gate allows a real retry.
             thermalDeferred.remove(id)
-            update(id) { it.copy(status = DownloadStatus.STARTING, progress = 0f, speed = "Starting…", eta = "—", error = "") }
+            val runToken = UUID.randomUUID().toString().replace("-", "")
+            update(id) {
+                it.copy(
+                    status = DownloadStatus.STARTING,
+                    progress = 0f,
+                    speed = "Starting…",
+                    eta = "—",
+                    error = "",
+                    runToken = runToken
+                )
+            }
+            val executionKey = "$id-$runToken"
             val beforeLaunch = _items.value.firstOrNull { it.id == id }
             if (beforeLaunch == null || beforeLaunch.status == DownloadStatus.STOPPED || id in cancelled) return
-            val script = TermuxBridge.downloadScript(id, original.url, original.mode.name, destination)
+            val script = TermuxBridge.downloadScript(id, original.url, original.mode.name, destination, runToken)
             val launch = TermuxBridge.runShell(appContext, script, "Download Studio · ${original.mode.name.lowercase()}", true)
             if (launch.isFailure) throw launch.exceptionOrNull() ?: IllegalStateException("Termux could not start the download.")
 
             val afterLaunch = _items.value.firstOrNull { it.id == id }
             if (afterLaunch == null || afterLaunch.status == DownloadStatus.STOPPED || id in cancelled) {
                 // The queue item may have been removed while Android was handing the command to Termux.
-                signal(id, "INT")
+                signal(id, "INT", runToken)
                 return
             }
             if (afterLaunch.status == DownloadStatus.PAUSED) {
-                signal(id, "STOP")
+                signal(id, "STOP", runToken)
             } else {
                 update(id) { current ->
                     if (current.status == DownloadStatus.PAUSED || current.status == DownloadStatus.STOPPED) current
@@ -579,7 +599,7 @@ object DownloadCoordinator {
             while (SystemClock.elapsedRealtime() - startAt < MAX_DOWNLOAD_RUNTIME_MS) {
                 val current = _items.value.firstOrNull { it.id == id }
                 if (current == null || current.status == DownloadStatus.STOPPED || id in cancelled) {
-                    signal(id, "INT")
+                    signal(id, "INT", runToken)
                     break
                 }
                 if (current.status == DownloadStatus.PAUSED) {
@@ -587,13 +607,13 @@ object DownloadCoordinator {
                     delay(MONITOR_INTERVAL_MS * 2)
                     continue
                 }
-                val log = StorageAccess.readStateTail(appContext, "DownloadStudioState/$id.log").orEmpty()
+                val log = StorageAccess.readStateTail(appContext, "DownloadStudioState/$executionKey.log").orEmpty()
                 if (log != lastLog) {
                     lastLog = log
                     lastActivityAt = SystemClock.elapsedRealtime()
                     parseProgress(id, log)
                 }
-                val exit = StorageAccess.readState(appContext, "DownloadStudioState/$id.exit")?.trim()
+                val exit = StorageAccess.readState(appContext, "DownloadStudioState/$executionKey.exit")?.trim()
                 if (!exit.isNullOrBlank()) {
                     val code = exit.toIntOrNull() ?: 1
                     if (id in cancelled || _items.value.firstOrNull { it.id == id }?.status == DownloadStatus.STOPPED) break
@@ -623,7 +643,7 @@ object DownloadCoordinator {
                     }
                     break
                 }
-                val pid = StorageAccess.readState(appContext, "DownloadStudioState/$id.pid")?.trim().orEmpty()
+                val pid = StorageAccess.readState(appContext, "DownloadStudioState/$executionKey.pid")?.trim().orEmpty()
                 if (pid.isNotBlank()) sawPid = true
                 val now = SystemClock.elapsedRealtime()
                 if (!sawPid && now - startAt > START_TIMEOUT_MS) {
@@ -668,8 +688,10 @@ object DownloadCoordinator {
             val startAt = SystemClock.elapsedRealtime()
             var lastActivityAt = startAt
             var lastLog = ""
-            val logPath = "DownloadStudioState/$id.log"
-            val pidPath = "DownloadStudioState/$id.pid"
+            val executionKey = if (item.runToken.isBlank()) id else "$id-${item.runToken}"
+            val logPath = "DownloadStudioState/$executionKey.log"
+            val pidPath = "DownloadStudioState/$executionKey.pid"
+            val exitPath = "DownloadStudioState/$executionKey.exit"
             while (SystemClock.elapsedRealtime() - startAt < MAX_DOWNLOAD_RUNTIME_MS) {
                 val current = _items.value.firstOrNull { it.id == id } ?: break
                 if (current.status == DownloadStatus.STOPPED || id in cancelled) break
@@ -684,7 +706,7 @@ object DownloadCoordinator {
                     lastActivityAt = SystemClock.elapsedRealtime()
                     parseProgress(id, log)
                 }
-                val exit = StorageAccess.readState(appContext, "DownloadStudioState/$id.exit")?.trim()
+                val exit = StorageAccess.readState(appContext, exitPath)?.trim()
                 if (!exit.isNullOrBlank()) {
                     val code = exit.toIntOrNull() ?: 1
                     if (id in thermalDeferred) {
