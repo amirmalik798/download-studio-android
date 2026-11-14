@@ -42,6 +42,7 @@ object ShareDownloadNotification {
     private val executor = Executors.newFixedThreadPool(2)
     private val bitmapCache = LruCache<String, Bitmap>(12)
     private val thumbnailRequests = ConcurrentHashMap.newKeySet<String>()
+    private val renderLock = Any()
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= 26) {
@@ -75,20 +76,25 @@ object ShareDownloadNotification {
      * Reconcile the full system-notification set against one immutable queue snapshot.
      * Stable notification tags ensure one queue item owns one system notification.
      */
-    fun syncQueue(context: Context, items: List<DownloadItem>) {
+    fun syncQueue(context: Context) {
         ensureChannel(context)
-        val expectedTags = items.mapTo(HashSet()) { notificationTag(it.id) }
-        items.forEach { item -> publishItem(context.applicationContext, item) }
+        synchronized(renderLock) {
+            // Always read the coordinator's current state while holding the render
+            // lock. An older caller can therefore never overwrite a newer snapshot.
+            val currentItems = DownloadCoordinator.items.value.toList()
+            val expectedTags = currentItems.mapTo(HashSet()) { notificationTag(it.id) }
+            currentItems.forEach { item -> publishItem(context.applicationContext, item) }
 
-        runCatching {
-            val manager = context.getSystemService(NotificationManager::class.java)
-            manager.activeNotifications
-                .filter {
-                    (it.tag?.startsWith(NOTIFICATION_TAG_PREFIX) == true && it.tag !in expectedTags) ||
-                        (it.tag == null && it.notification.channelId == CHANNEL_ID)
-                }
-                .forEach { manager.cancel(it.tag, it.id) }
-        }.onFailure { Log.w(TAG, "Unable to reconcile removed queue notifications", it) }
+            runCatching {
+                val manager = context.getSystemService(NotificationManager::class.java)
+                manager.activeNotifications
+                    .filter {
+                        (it.tag?.startsWith(NOTIFICATION_TAG_PREFIX) == true && it.tag !in expectedTags) ||
+                            (it.tag == null && it.notification.channelId == CHANNEL_ID)
+                    }
+                    .forEach { manager.cancel(it.tag, it.id) }
+            }.onFailure { Log.w(TAG, "Unable to reconcile removed queue notifications", it) }
+        }
     }
 
     private fun publishItem(context: Context, item: DownloadItem) {
@@ -101,8 +107,10 @@ object ShareDownloadNotification {
             try {
                 val bitmap = loadBitmap(thumbnailUrl) ?: return@execute
                 bitmapCache.put(thumbnailUrl, bitmap)
-                val current = DownloadCoordinator.items.value.firstOrNull { it.id == item.id } ?: return@execute
-                if (current.thumbnailUrl == thumbnailUrl) post(context, current, bitmap)
+                synchronized(renderLock) {
+                    val current = DownloadCoordinator.items.value.firstOrNull { it.id == item.id } ?: return@synchronized
+                    if (current.thumbnailUrl == thumbnailUrl) post(context, current, bitmap)
+                }
             } finally {
                 thumbnailRequests.remove(thumbnailUrl)
             }
