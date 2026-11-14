@@ -83,7 +83,10 @@ object ShareDownloadNotification {
         runCatching {
             val manager = context.getSystemService(NotificationManager::class.java)
             manager.activeNotifications
-                .filter { it.tag?.startsWith(NOTIFICATION_TAG_PREFIX) == true && it.tag !in expectedTags }
+                .filter {
+                    (it.tag?.startsWith(NOTIFICATION_TAG_PREFIX) == true && it.tag !in expectedTags) ||
+                        (it.tag == null && it.notification.channelId == CHANNEL_ID)
+                }
                 .forEach { manager.cancel(it.tag, it.id) }
         }.onFailure { Log.w(TAG, "Unable to reconcile removed queue notifications", it) }
     }
@@ -153,7 +156,16 @@ object ShareDownloadNotification {
                     if (item.error.isNotBlank()) append("\n").append(item.error)
                 }
                 builder.setContentText(heading)
-                if (thumbnail == null) builder.setStyle(NotificationCompat.BigTextStyle().bigText(details))
+                if (thumbnail != null) {
+                    builder.setStyle(
+                        NotificationCompat.BigPictureStyle()
+                            .bigPicture(thumbnail)
+                            .bigLargeIcon(null as Bitmap?)
+                            .setSummaryText(details)
+                    )
+                } else {
+                    builder.setStyle(NotificationCompat.BigTextStyle().bigText(details))
+                }
                 if (item.shareReady) {
                     builder.addAction(action(context, item.id, ACTION_PREFIX + "VIDEO", R.drawable.ic_action_video, "Download video"))
                     builder.addAction(action(context, item.id, ACTION_PREFIX + "AUDIO", R.drawable.ic_action_audio, "Download audio"))
