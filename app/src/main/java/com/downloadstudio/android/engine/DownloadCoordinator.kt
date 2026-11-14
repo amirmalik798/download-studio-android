@@ -559,7 +559,7 @@ object DownloadCoordinator {
             // Clear that marker only after the thermal gate allows a real retry.
             thermalDeferred.remove(id)
             val runToken = UUID.randomUUID().toString().replace("-", "")
-            update(id) {
+            update(id, durable = true) {
                 it.copy(
                     status = DownloadStatus.STARTING,
                     progress = 0f,
@@ -824,10 +824,14 @@ object DownloadCoordinator {
         }
     }
 
-    private fun update(id: String, transform: (DownloadItem) -> DownloadItem) {
+    private fun update(
+        id: String,
+        durable: Boolean = false,
+        transform: (DownloadItem) -> DownloadItem
+    ) {
         synchronized(stateLock) {
             _items.value = _items.value.map { if (it.id == id) transform(it) else it }
-            QueueStore.save(appContext, _items.value)
+            QueueStore.save(appContext, _items.value, durable = durable)
         }
     }
 
