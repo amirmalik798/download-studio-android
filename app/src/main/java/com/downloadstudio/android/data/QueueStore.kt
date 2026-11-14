@@ -32,14 +32,16 @@ object QueueStore {
     fun load(context: Context): List<DownloadItem> {
         migrateLegacyPreferences(context)
         val raw = queuePrefs(context).getString(KEY_QUEUE, "[]") ?: "[]"
-        return decodeQueue(raw)
+        return decodeQueue(raw).sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
     }
 
-    fun save(context: Context, items: List<DownloadItem>) {
+    fun save(context: Context, items: List<DownloadItem>, durable: Boolean = false) {
         migrateLegacyPreferences(context)
-        val raw = encodeQueue(items).toString()
-        queuePrefs(context).edit().putString(KEY_QUEUE, raw).apply()
-        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(items), force = false)
+        val ordered = items.sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+        val raw = encodeQueue(ordered).toString()
+        val editor = queuePrefs(context).edit().putString(KEY_QUEUE, raw)
+        if (durable) editor.commit() else editor.apply()
+        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(ordered), force = false)
     }
 
     /**
