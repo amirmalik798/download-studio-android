@@ -13,6 +13,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.util.LruCache
+import android.util.Log
 import java.io.ByteArrayOutputStream
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
@@ -34,7 +35,8 @@ import java.util.concurrent.Executors
  * sole source of truth for whether a link exists and what metadata it contains.
  */
 object LinkStatusNotification {
-    private const val CHANNEL_ID = "shared_link_status"
+    private const val CHANNEL_ID = "shared_link_acceptance_v2"
+    private const val TAG = "DownloadStudioNotice"
     private const val TAG_PREFIX = "download-studio:shared-link:"
     private const val PREFS = "download_studio_notification_state"
     private const val DISMISSED_IDS = "dismissed_link_notifications"
@@ -54,11 +56,13 @@ object LinkStatusNotification {
             NotificationChannel(
                 CHANNEL_ID,
                 "Shared link status",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Confirms when a shared media link is accepted into the Download Studio queue"
                 setShowBadge(true)
                 lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+                enableLights(true)
+                lightColor = android.graphics.Color.rgb(91, 224, 245)
             }
         )
     }
@@ -75,11 +79,31 @@ object LinkStatusNotification {
         return true
     }
 
+    /** Publish links accepted while Android notification permission was unavailable. */
+    fun showPending(context: Context) {
+        DownloadCoordinator.items.value
+            .filter { it.awaitingChoice && it.notificationEligible }
+            .forEach { show(context, it.id, alert = true) }
+    }
+
     fun show(context: Context, itemId: String, alert: Boolean = true) {
         val appContext = context.applicationContext
         ensureChannel(appContext)
-        if (!canPost(appContext) || isDismissed(appContext, itemId)) return
-        val item = DownloadCoordinator.items.value.firstOrNull { it.id == itemId && it.awaitingChoice } ?: return
+        if (!canPost(appContext)) {
+            Log.w(TAG, "Cannot post $itemId: notification permission or app/channel notifications are disabled")
+            return
+        }
+        if (isDismissed(appContext, itemId)) {
+            Log.i(TAG, "Notification for $itemId was already dismissed")
+            return
+        }
+        val item = DownloadCoordinator.items.value.firstOrNull {
+            it.id == itemId && it.awaitingChoice && it.notificationEligible
+        }
+        if (item == null) {
+            Log.w(TAG, "Queue item $itemId is unavailable for notification delivery")
+            return
+        }
         val image = item.thumbnailUrl.takeIf { it.isNotBlank() }?.let(bitmapCache::get)
         post(appContext, item, image, alert)
 
@@ -91,7 +115,7 @@ object LinkStatusNotification {
                 bitmapCache.put(thumbnailUrl, bitmap)
                 if (isDismissed(appContext, itemId)) return@execute
                 val current = DownloadCoordinator.items.value.firstOrNull {
-                    it.id == itemId && it.awaitingChoice && it.thumbnailUrl == thumbnailUrl
+                    it.id == itemId && it.awaitingChoice && it.notificationEligible && it.thumbnailUrl == thumbnailUrl
                 } ?: return@execute
                 post(appContext, current, bitmap, alert = false)
             } finally {
@@ -125,32 +149,56 @@ object LinkStatusNotification {
             .getStringSet(DISMISSED_IDS, emptySet()).orEmpty()
 
     private fun post(context: Context, item: DownloadItem, thumbnail: Bitmap?, alert: Boolean) {
-        val compact = compactView(context, item, thumbnail)
-        val expanded = expandedView(context, item, thumbnail)
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val source = item.sourceName.ifBlank { LinkMetadataResolver.siteName(item.url) }
+        val title = item.title.ifBlank { "New media link accepted" }
+        val durationLabel = formatDuration(item.durationSeconds)
+        val sizeLabel = formatBytes(item.estimatedSizeBytes)
+        val statusText = "$source · Added to your queue"
+        val details = "$source · Added to your download queue\nLength: $durationLabel · Approx. size: $sizeLabel\nChoose Download Video or Download Audio in Download Studio."
+        val itemId = item.id
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification_small)
-            .setContentTitle("New link added to your queue")
-            .setContentText("${item.sourceName.ifBlank { LinkMetadataResolver.siteName(item.url) }} · Waiting for your choice")
-            .setContentIntent(openApp(context, item.id))
-            .setDeleteIntent(dismissIntent(context, item.id))
-            .setCustomContentView(compact)
-            .setCustomBigContentView(expanded)
-            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setContentTitle(title)
+            .setContentText(statusText)
+            .setSubText("DOWNLOAD STUDIO")
+            .setContentIntent(openApp(context, itemId))
+            .setDeleteIntent(dismissIntent(context, itemId))
             .setColor(android.graphics.Color.rgb(91, 224, 245))
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOnlyAlertOnce(true)
+            .setSilent(!alert)
             .setAutoCancel(true)
             .setOngoing(false)
-            .build()
+            .setShowWhen(true)
 
-        runCatching {
+        if (thumbnail != null) {
+            builder
+                .setLargeIcon(thumbnail)
+                .setStyle(
+                    NotificationCompat.BigPictureStyle()
+                        .bigPicture(thumbnail)
+                        .bigLargeIcon(null as Bitmap?)
+                        .setBigContentTitle(title)
+                        .setSummaryText("$source · $durationLabel · Approx. $sizeLabel")
+                )
+        } else {
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(details))
+        }
+
+        try {
             NotificationManagerCompat.from(context).notify(
-                notificationTag(item.id),
-                notificationId(item.id),
-                notification
+                notificationTag(itemId),
+                notificationId(itemId),
+                builder.build()
             )
+            Log.i(TAG, "Posted shared-link notification for $itemId from $source")
+        } catch (error: SecurityException) {
+            Log.e(TAG, "Android denied notification delivery for $itemId", error)
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "Android failed to render or post notification for $itemId", error)
         }
     }
 
