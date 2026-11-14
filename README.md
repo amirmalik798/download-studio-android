@@ -1,4 +1,4 @@
-# Download Studio for Android — 0.1.10
+# Download Studio for Android — 0.1.11
 
 A native Android media-downloader interface. Download Studio receives media URLs through Android's Share sheet and delegates extraction, downloading and processing to yt-dlp and FFmpeg running locally in Termux.
 
@@ -15,6 +15,7 @@ A native Android media-downloader interface. Download Studio receives media URLs
 - Explicit VIDEO/AUDIO labels in the Downloads list.
 - Tapping a completed item opens its saved file using Android's ACTION_VIEW and the file's detected MIME type; Android chooses the compatible app.
 - Queue/download details remain available for unfinished or failed items.
+- Live progress shows percentage, downloaded/total size, speed and ETA; yt-dlp post-processing is shown as a separate indeterminate Processing stage (for example, merging or MP3 conversion).
 - Termux RUN_COMMAND integration; yt-dlp and FFmpeg execute on the phone.
 - Device thermal guard, one concurrent download by default, two maximum, bounded monitoring and a Termux-side watchdog.
 - GitHub Actions workflow that validates source safeguards and builds/uploads a debug APK artifact.
@@ -23,9 +24,13 @@ A native Android media-downloader interface. Download Studio receives media URLs
 
 The previous Queue and Library destinations are combined into Downloads. All download records remain in the same persisted queue; this is a UI consolidation, not a destructive history migration.
 
+Queue records are stored in a dedicated SharedPreferences file included in Android Auto Backup for cloud backup and device transfer. A local JSON snapshot is also mirrored under `DownloadStudioState/queue_backup.json` inside the user-selected Downloads folder. The queue snapshot is updated when queue membership or meaningful item state changes, rather than on every progress tick. After reinstalling, Android may restore the queue automatically when device backup is enabled. Re-select the same Downloads folder in Settings to restore from the local snapshot and reconnect to downloaded files and Termux state logs. Android revokes the app's SAF folder grant on uninstall, so folder access must be granted again. The SAF URI itself is deliberately excluded from Android backup.
+
 Search checks the displayed title. For old entries still labelled Shared media, Download Studio attempts to derive a readable title from the saved output filename. New downloads receive the actual yt-dlp title through a `DS_TITLE` log marker.
 
 Date sorting uses the completion timestamp for files completed in v0.1.4 and later. Existing records that predate this field fall back to their original creation time because their historic completion time was not stored.
+
+Active downloads show a determinate percentage, bytes downloaded versus total bytes (when the extractor reports a size), transfer speed and ETA. Once yt-dlp starts a postprocessor, the row changes to an indeterminate Processing stage and identifies common actions such as video/audio merging, MP3 conversion, thumbnail embedding or metadata writing.
 
 Completed rows open through Android's default compatible app for the file MIME type. The file is resolved inside the user-selected SAF download folder and the app grants a temporary read URI permission. If the file is missing or no compatible app is installed, Download Studio displays an error.
 

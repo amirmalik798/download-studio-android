@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Back up the queue only. The SAF URI and folder grant are deliberately excluded. -->
+    <include domain="sharedpref" path="download_studio_queue.xml" />
+</full-backup-content>

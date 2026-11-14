@@ -29,7 +29,7 @@ def main() -> int:
     require('id("com.android.application") version "8.13.2"' in root_build, "Unexpected Android Gradle Plugin")
     require('id("org.jetbrains.kotlin.android") version "2.2.10"' in root_build, "Unexpected Kotlin plugin")
     require("compileSdk = 36" in app_build and "minSdk = 26" in app_build, "Unexpected SDK configuration")
-    require('versionName = "0.1.10"' in app_build and "versionCode = 11" in app_build, "Version not bumped to 0.1.9")
+    require('versionName = "0.1.11"' in app_build and "versionCode = 12" in app_build, "Version not bumped to 0.1.11")
     require("coil-compose" in app_build and "AsyncImage" in main_activity, "Coil thumbnail support missing")
     require("youtubeThumbnailUrl" in main_activity and "resolvePageMetadata" in main_activity and "og:image" in main_activity and "twitter:image" in main_activity and "VideoThumbnailPreview(url)" in main_activity and "height(190.dp)" in main_activity and "jsoup" in app_build and '"VIDEO"' in main_activity and '"AUDIO"' in main_activity, "Multi-site pasted URL thumbnail preview/type labels missing")
     require("previewMetadataScript" in termux and "--skip-download --dump-single-json" in termux and "DS_THUMBNAIL:" in termux and "DS_DONE" in termux, "Metadata-only yt-dlp preview fallback missing")
@@ -58,7 +58,7 @@ def main() -> int:
     require(thermal_retry_guard in coordinator, "Thermal retry marker is not cleared before a new run")
     require("MAX_DOWNLOAD_RUNTIME_MS" in coordinator and "STALL_TIMEOUT_MS" in coordinator and "START_TIMEOUT_MS" in coordinator, "Bounded download monitoring missing")
     require("readStateTail" in coordinator and "fun readStateTail" in storage, "Tail-only log polling missing")
-    require("current.status == DownloadStatus.QUEUED) current" in coordinator, "Progress parser status guard is malformed or missing")
+    require("current.status in setOf(DownloadStatus.PAUSED, DownloadStatus.STOPPED, DownloadStatus.QUEUED)) current" in coordinator, "Progress parser status guard is malformed or missing")
     require("while (true)" not in coordinator and "while (true)" not in main_activity, "Unbounded polling loop remains")
     require('bestvideo*+bestaudio/best' in termux and 'bestaudio/best' in termux and '--audio-quality 0 --audio-format mp3' in termux, "Best-available video/audio selectors missing")
     manifest_text = (ROOT / "app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
@@ -96,6 +96,31 @@ def main() -> int:
     require("--concurrent-fragments 1" in termux, "yt-dlp fragment concurrency limit missing")
     require("ds_watch_ticks" in termux and "-lt 360" in termux and "sleep 60" in termux, "Termux bounded watchdog missing")
     require("pkg install -y python ffmpeg coreutils procps" in termux, "Termux coreutils/procps packages missing")
+    require("totalSize" in item_model and "processingStage" in item_model and
+            "totalSize" in queue_store and "processingStage" in queue_store,
+            "Download size and post-processing stage fields are not persisted")
+    require("DS_POSTPROCESS|" in termux and "progress.postprocessor" in termux and
+            "DS_POSTPROCESS|" in coordinator and "DownloadStatus.PROCESSING" in coordinator,
+            "yt-dlp post-processing stage reporting is missing")
+    require("progress.total_bytes" in termux and "progress.total_bytes_estimate" in termux and
+            "totalSize = totalSize" in coordinator,
+            "Live progress does not expose actual/estimated total size")
+    require('android:allowBackup="true"' in manifest_text and
+            'android:fullBackupContent="@xml/backup_rules"' in manifest_text and
+            'android:dataExtractionRules="@xml/data_extraction_rules"' in manifest_text,
+            "Android Auto Backup is not enabled with explicit backup rules")
+    backup_rules = (ROOT / "app/src/main/res/xml/backup_rules.xml").read_text(encoding="utf-8")
+    extraction_rules = (ROOT / "app/src/main/res/xml/data_extraction_rules.xml").read_text(encoding="utf-8")
+    ET.parse(ROOT / "app/src/main/res/xml/backup_rules.xml")
+    ET.parse(ROOT / "app/src/main/res/xml/data_extraction_rules.xml")
+    require('domain="sharedpref" path="download_studio_queue.xml"' in backup_rules and
+            'domain="sharedpref" path="download_studio_queue.xml"' in extraction_rules and
+            "download_studio_store.xml" not in backup_rules and
+            "download_studio_store.xml" not in extraction_rules,
+            "Backup must include queue data without restoring the SAF URI settings")
+    require("restoreFromExternal" in queue_store and "queue_backup.json" in queue_store and
+            "DownloadStudioState" in queue_store and "fun configurationChanged()" in coordinator,
+            "Local queue snapshot restoration after reselecting the Downloads folder is missing")
     require("com.termux.RUN_COMMAND" in termux and 'python -m pip install -U' in termux, "Termux command/install integration missing")
     require(any((ROOT / ".github/workflows" / name).is_file() for name in ("main.yml", "build-apk.yml")), "GitHub Actions workflow missing")
     print("PASS: manifest permissions; overlay and Usage Access removed")
