@@ -80,7 +80,7 @@ object QueueStore {
         val raw = context.contentResolver.openInputStream(backup.uri)
             ?.bufferedReader(Charsets.UTF_8)
             ?.use { it.readText() } ?: return null
-        decodeQueue(raw).sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+        (decodeQueue(raw) ?: return null).sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
     }.getOrNull()
 
     /** Force a fresh local snapshot after a folder is selected or a queue is restored. */
