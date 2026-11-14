@@ -1,11 +1,13 @@
 package com.downloadstudio.android
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.Settings
 import android.widget.Toast
@@ -13,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -75,6 +78,44 @@ private val Violet = Color(0xFFA78BFA)
 private val Red = Color(0xFFFF7185)
 
 class MainActivity : ComponentActivity() {
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            LinkStatusNotification.ensureChannel(this)
+            LinkStatusNotification.showPending(this)
+        } else {
+            Toast.makeText(
+                this,
+                "Notifications are disabled. Enable them in Settings to see when shared links are accepted.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    override fun onPostResume() {
+        super.onPostResume()
+        LinkStatusNotification.ensureChannel(this)
+
+        if (LinkStatusNotification.canPost(this)) {
+            // Recover shared links accepted while permission was missing or the
+            // app was returning from Android notification settings.
+            LinkStatusNotification.showPending(this)
+            return
+        }
+
+        val hasRuntimePermission = Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (!hasRuntimePermission) {
+            val preferences = getSharedPreferences("download_studio_notification_state", MODE_PRIVATE)
+            val alreadyRequested = preferences.getBoolean("notification_permission_request_started_v1", false)
+            if (!alreadyRequested) {
+                preferences.edit().putBoolean("notification_permission_request_started_v1", true).apply()
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = android.graphics.Color.rgb(9, 14, 25)
