@@ -90,6 +90,9 @@ object LinkMetadataResolver {
 
     suspend fun resolveNow(context: Context, itemId: String, rawUrl: String, updateNotification: Boolean) {
         val appContext = context.applicationContext
+        // WorkManager may run after Android has reclaimed the share receiver's process.
+        // Reload the persisted queue before attempting to enrich the accepted item.
+        DownloadCoordinator.initialize(appContext)
         val site = siteName(rawUrl)
         val extracted = resolveWithDownloader(appContext, rawUrl)
         val page = if (
