@@ -151,7 +151,7 @@ object LinkStatusNotification {
         RemoteViews(context.packageName, R.layout.notification_link_collapsed).apply {
             setTextViewText(R.id.notification_source_small, item.sourceName.ifBlank { LinkMetadataResolver.siteName(item.url) }.uppercase())
             setTextViewText(R.id.notification_title_small, item.title.ifBlank { "New link added to your queue" })
-            setTextViewText(R.id.notification_state_small, "Accepted · Waiting for your choice")
+            setTextViewText(R.id.notification_state_small, "Accepted · ${formatDuration(item.durationSeconds)} · ${formatBytes(item.estimatedSizeBytes)}")
             if (thumbnail != null) setImageViewBitmap(R.id.notification_thumbnail_small, thumbnail)
             else setImageViewResource(R.id.notification_thumbnail_small, R.drawable.ic_notification_placeholder)
         }
