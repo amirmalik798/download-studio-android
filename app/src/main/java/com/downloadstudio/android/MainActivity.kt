@@ -245,7 +245,10 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().background(Ink).padding(padding)) {
-            TopHeader(tab) { tab = AppTab.SETTINGS }
+            // Downloads uses its own compact toolbar; keep the branded header on Home and Settings.
+            if (tab != AppTab.DOWNLOADS) {
+                TopHeader(tab) { tab = AppTab.SETTINGS }
+            }
             when (tab) {
                 AppTab.HOME -> if (setupReady) HomeScreen(
                     items = items, url = url, onUrl = { url = it }, mode = mode,
@@ -560,18 +563,23 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
     }
 
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 12.dp),
+        Modifier.fillMaxSize()
+            .background(Ink)
+            .padding(horizontal = 18.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("Downloads", color = TextMain, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
-                Text(
-                    "$activeCount active · $completedCount completed · $failedCount failed",
-                    color = TextMuted,
-                    fontSize = 11.sp
-                )
-            }
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 42.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Downloads",
+                color = TextMain,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier.weight(1f),
+                maxLines = 1
+            )
             Box(
                 Modifier.clip(RoundedCornerShape(11.dp))
                     .background(Panel2)
@@ -592,6 +600,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 Icon(Icons.Default.DeleteSweep, "Clear downloads list", tint = if (items.isNotEmpty()) Red else TextMuted)
             }
         }
+        HorizontalDivider(color = Line.copy(alpha = .55f))
 
         OutlinedTextField(
             value = search,
@@ -781,9 +790,11 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 Icons.Default.Search
             )
             else -> LazyColumn(
-                Modifier.weight(1f),
+                Modifier.weight(1f)
+                    .fillMaxWidth()
+                    .background(Ink),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = 18.dp)
+                contentPadding = PaddingValues(top = 2.dp, bottom = 18.dp)
             ) {
                 lazyItems(visibleItems, key = { it.id }) { item ->
                     DownloadRow(item, onClick = { onOpenItem(item) }, onRemoveRequest = { itemPendingRemoval = item })
@@ -885,7 +896,16 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     }
                 }
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
-                    Text(if (item.awaitingChoice) "CHOOSE FORMAT" else friendlyStatus(item.status), color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            item.awaitingChoice -> "CHOOSE FORMAT"
+                            item.status == DownloadStatus.COMPLETED -> "Saved"
+                            else -> friendlyStatus(item.status)
+                        },
+                        color = color,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
                 if (!item.awaitingChoice) {
                     var actionsExpanded by remember(item.id) { mutableStateOf(false) }
