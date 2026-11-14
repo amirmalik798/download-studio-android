@@ -1241,8 +1241,11 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
         title = { Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3")
-                DetailLine("Status", friendlyStatus(item.status))
+                DetailLine("Type", if (item.awaitingChoice) "Media link · choose video or audio" else if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3")
+                DetailLine("Status", if (item.awaitingChoice) "Awaiting format choice" else friendlyStatus(item.status))
+                if (item.sourceName.isNotBlank()) DetailLine("Source website", item.sourceName)
+                if (item.durationSeconds > 0L) DetailLine("Length", formatPreviewDuration(item.durationSeconds))
+                if (item.estimatedSizeBytes > 0L) DetailLine("Estimated size", formatBytesLabel(item.estimatedSizeBytes))
                 DetailLine("Download date", formatDownloadDate(item))
                 DetailLine("Progress", "${(item.progress * 100).toInt()}%")
                 DetailLine("Downloaded", item.downloaded)
@@ -1261,7 +1264,7 @@ private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
             Row {
                 if (item.status == DownloadStatus.DOWNLOADING) TextButton(onClick = { DownloadCoordinator.pause(item.id); onDismiss() }) { Text("Pause") }
                 if (item.status == DownloadStatus.PAUSED) TextButton(onClick = { DownloadCoordinator.resume(item.id); onDismiss() }) { Text("Resume") }
-                if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)) TextButton(onClick = { DownloadCoordinator.stop(item.id); onDismiss() }) { Text("Stop", color = Red) }
+                if (!item.awaitingChoice && item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)) TextButton(onClick = { DownloadCoordinator.stop(item.id); onDismiss() }) { Text("Stop", color = Red) }
                 TextButton(onClick = onDismiss) { Text("Close") }
             }
         }
