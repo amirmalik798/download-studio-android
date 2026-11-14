@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
+import android.util.Log
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import com.downloadstudio.android.data.DownloadMode
@@ -38,7 +39,14 @@ class ShareLinkActivity : ComponentActivity() {
                 }
                     .onSuccess { id ->
                         acceptedIds.add(id)
-                        LinkMetadataResolver.resolve(applicationContext, id, url, updateNotification = true)
+                        // Deliver the acceptance notice immediately after the queue save.
+                        // Metadata work is best-effort and must never block notification delivery.
+                        LinkStatusNotification.show(applicationContext, id)
+                        runCatching {
+                            LinkMetadataResolver.resolve(applicationContext, id, url, updateNotification = true)
+                        }.onFailure {
+                            Log.e("DownloadStudioShare", "Could not schedule preview enrichment for queue item $id", it)
+                        }
                     }
             }
         }
@@ -50,7 +58,7 @@ class ShareLinkActivity : ComponentActivity() {
 
         // Do not request runtime permission from this translucent share target.
         // Permission is requested from the normal visible MainActivity instead.
-        acceptedIds.forEach { LinkStatusNotification.show(applicationContext, it) }
+        // Notifications were posted synchronously as each accepted entry was saved.
         finishQuietly()
     }
 
