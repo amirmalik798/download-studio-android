@@ -128,7 +128,7 @@ object TermuxBridge {
             "ds_state=\$(ps -o stat= -p \"\$ds_pid\" 2>/dev/null | tr -d ' '); " +
             "case \"\$ds_state\" in T*) ds_is_stopped=1 ;; *) ds_is_stopped=0 ;; esac; " +
             "if [ \"\$((ds_now-ds_watch_start))\" -ge 21600 ] || { [ \"\$ds_is_stopped\" -eq 0 ] && [ \"\$((ds_now-ds_log_mtime))\" -ge 900 ]; }; then " +
-            "kill -CONT \"\$ds_pid\" 2>/dev/null || true; sleep 0.1; kill -INT \"\$ds_pid\" 2>/dev/null || true; break; fi; done) & " +
+            "kill -CONT \"\$ds_pid\" 2>/dev/null || true; sleep 0.1; kill -CONT \"\$ds_pid\" 2>/dev/null || true; sleep 0.1; kill -INT \"\$ds_pid\" 2>/dev/null || true; break; fi; done) & " +
             "ds_watch_pid=\$!; wait \"\$ds_pid\"; ds_code=\$?; " +
             "kill \"\$ds_watch_pid\" 2>/dev/null || true; wait \"\$ds_watch_pid\" 2>/dev/null || true; " +
             "printf '%s' \"\$ds_code\" > " + q(exit) + "; exit \"\$ds_code\""
