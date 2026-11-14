@@ -19,12 +19,10 @@ data class DownloadItem(
     val completedAt: Long = 0L,
     val thumbnailUrl: String = "",
     val durationSeconds: Long = 0L,
-    val shareReady: Boolean = true
+    val shareReady: Boolean = true,
+    val shareState: SharedLinkState? = null
 )
 
-enum class DownloadMode { CHOOSE, VIDEO, AUDIO }
-enum class DownloadStatus {
-    PREVIEWING, AWAITING_ACTION,
-    QUEUED, STARTING, DOWNLOADING, PAUSED, PROCESSING,
-    COMPLETED, FAILED, STOPPED
-}
+enum class DownloadMode { VIDEO, AUDIO }
+enum class SharedLinkState { PREVIEWING, AWAITING_ACTION }
+enum class DownloadStatus { QUEUED, STARTING, DOWNLOADING, PAUSED, PROCESSING, COMPLETED, FAILED, STOPPED }
