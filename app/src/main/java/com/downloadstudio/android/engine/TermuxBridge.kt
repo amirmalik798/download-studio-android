@@ -1,5 +1,6 @@
 package com.downloadstudio.android.engine
 
+import android.net.Uri
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -86,6 +87,13 @@ object TermuxBridge {
     }
 
     fun downloadScript(id: String, url: String, mode: String, destination: String): String {
+        require(id.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid download id." }
+        require(mode == "VIDEO" || mode == "AUDIO") { "Unsupported download format." }
+        val uri = Uri.parse(url)
+        require(url.length <= 4096 && (uri.scheme == "https" || uri.scheme == "http") &&
+            !uri.host.isNullOrBlank() && uri.userInfo == null
+        ) { "A valid HTTP or HTTPS media link is required." }
+        require(destination.startsWith("/")) { "Invalid download folder." }
         val q = ::shellQuote
         val stateDir = "$destination/DownloadStudioState"
         val log = "$stateDir/$id.log"
