@@ -31,15 +31,29 @@ object QueueStore {
 
     fun load(context: Context): List<DownloadItem> {
         migrateLegacyPreferences(context)
-        val raw = queuePrefs(context).getString(KEY_QUEUE, "[]") ?: "[]"
-        return decodeQueue(raw)
+        val prefs = queuePrefs(context)
+        val raw = prefs.getString(KEY_QUEUE, "[]") ?: "[]"
+        val decoded = decodeQueue(raw)
+        if (decoded != null) {
+            return decoded.sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+        }
+
+        // A truncated/corrupt local preference must not permanently shadow a
+        // valid shared-folder snapshot from a previous installation.
+        prefs.edit().remove(KEY_QUEUE).commit()
+        val restored = restoreFromExternal(context).orEmpty()
+            .sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+        if (restored.isNotEmpty()) save(context, restored, durable = true)
+        return restored
     }
 
-    fun save(context: Context, items: List<DownloadItem>) {
+    fun save(context: Context, items: List<DownloadItem>, durable: Boolean = false) {
         migrateLegacyPreferences(context)
-        val raw = encodeQueue(items).toString()
-        queuePrefs(context).edit().putString(KEY_QUEUE, raw).apply()
-        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(items), force = false)
+        val ordered = items.sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+        val raw = encodeQueue(ordered).toString()
+        val editor = queuePrefs(context).edit().putString(KEY_QUEUE, raw)
+        if (durable) editor.commit() else editor.apply()
+        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(ordered), force = false)
     }
 
     /**
@@ -66,50 +80,73 @@ object QueueStore {
         val raw = context.contentResolver.openInputStream(backup.uri)
             ?.bufferedReader(Charsets.UTF_8)
             ?.use { it.readText() } ?: return null
-        decodeQueue(raw)
+        (decodeQueue(raw) ?: return null).sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
     }.getOrNull()
 
     /** Force a fresh local snapshot after a folder is selected or a queue is restored. */
     fun mirrorBackup(context: Context, items: List<DownloadItem>, force: Boolean = true) {
-        val raw = encodeQueue(items).toString()
-        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(items), force)
+        val ordered = items.sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+        val raw = encodeQueue(ordered).toString()
+        scheduleExternalBackup(context.applicationContext, raw, externalFingerprint(ordered), force)
     }
 
-    private fun decodeQueue(raw: String): List<DownloadItem> = runCatching {
+    private fun decodeQueue(raw: String): List<DownloadItem>? = runCatching {
         val array = JSONArray(raw)
+        val seenIds = mutableSetOf<String>()
         buildList {
             for (i in 0 until array.length()) {
                 val o = array.optJSONObject(i) ?: continue
+                val id = o.optString("id").takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,48}")) } ?: continue
+                if (!seenIds.add(id)) continue
+
+                val url = o.optString("url").trim()
+                val uri = runCatching { Uri.parse(url) }.getOrNull() ?: continue
+                if (url.length > 4096 ||
+                    (uri.scheme != "http" && uri.scheme != "https") ||
+                    uri.host.isNullOrBlank() || uri.userInfo != null
+                ) continue
+
                 val status = runCatching {
                     DownloadStatus.valueOf(o.optString("status", "QUEUED"))
                 }.getOrDefault(DownloadStatus.QUEUED)
                 val mode = runCatching {
                     DownloadMode.valueOf(o.optString("mode", "VIDEO"))
                 }.getOrDefault(DownloadMode.VIDEO)
+                val progressValue = o.optDouble("progress", 0.0)
+                val progress = if (progressValue.isFinite()) {
+                    progressValue.toFloat().coerceIn(0f, 1f)
+                } else 0f
+
                 add(
                     DownloadItem(
-                        id = o.optString("id"),
-                        url = o.optString("url"),
-                        title = o.optString("title", "Video"),
+                        id = id,
+                        url = url,
+                        title = o.optString("title", "Video").take(300).ifBlank { "New download" },
                         mode = mode,
                         status = status,
-                        progress = o.optDouble("progress", 0.0).toFloat().coerceIn(0f, 1f),
-                        speed = o.optString("speed", "—"),
-                        eta = o.optString("eta", "—"),
-                        downloaded = o.optString("downloaded", "—"),
-                        totalSize = o.optString("totalSize", "—"),
-                        processingStage = o.optString("processingStage", ""),
-                        format = o.optString("format", ""),
-                        outputPath = o.optString("outputPath", ""),
-                        error = o.optString("error", ""),
-                        createdAt = o.optLong("createdAt", System.currentTimeMillis()),
-                        completedAt = o.optLong("completedAt", 0L),
-                        thumbnailUrl = o.optString("thumbnailUrl", "")
+                        progress = progress,
+                        speed = o.optString("speed", "—").take(64),
+                        eta = o.optString("eta", "—").take(64),
+                        downloaded = o.optString("downloaded", "—").take(64),
+                        totalSize = o.optString("totalSize", "—").take(64),
+                        processingStage = o.optString("processingStage", "").take(120),
+                        format = o.optString("format", "").take(64),
+                        outputPath = o.optString("outputPath", "").take(4096),
+                        error = o.optString("error", "").take(640),
+                        createdAt = o.optLong("createdAt", System.currentTimeMillis()).coerceAtLeast(0L),
+                        completedAt = o.optLong("completedAt", 0L).coerceAtLeast(0L),
+                        thumbnailUrl = o.optString("thumbnailUrl", "").take(4096),
+                        awaitingChoice = o.optBoolean("awaitingChoice", false),
+                        sourceName = o.optString("sourceName", "").take(120),
+                        durationSeconds = o.optLong("durationSeconds", 0L).coerceAtLeast(0L),
+                        estimatedSizeBytes = o.optLong("estimatedSizeBytes", 0L).coerceAtLeast(0L),
+                        notificationEligible = o.optBoolean("notificationEligible", false),
+                        runToken = o.optString("runToken").takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,48}")) }.orEmpty()
                     )
                 )
             }
         }
-    }.getOrDefault(emptyList())
+    }.getOrNull()
 
     private fun encodeQueue(items: List<DownloadItem>): JSONArray = JSONArray().apply {
         items.forEach { item ->
@@ -131,6 +168,12 @@ object QueueStore {
                 put("createdAt", item.createdAt)
                 put("completedAt", item.completedAt)
                 put("thumbnailUrl", item.thumbnailUrl)
+                put("awaitingChoice", item.awaitingChoice)
+                put("sourceName", item.sourceName)
+                put("durationSeconds", item.durationSeconds)
+                put("estimatedSizeBytes", item.estimatedSizeBytes)
+                put("notificationEligible", item.notificationEligible)
+                put("runToken", item.runToken)
             })
         }
     }
@@ -156,6 +199,12 @@ object QueueStore {
                 put("createdAt", item.createdAt)
                 put("completedAt", item.completedAt)
                 put("thumbnailUrl", item.thumbnailUrl)
+                put("awaitingChoice", item.awaitingChoice)
+                put("sourceName", item.sourceName)
+                put("durationSeconds", item.durationSeconds)
+                put("estimatedSizeBytes", item.estimatedSizeBytes)
+                put("notificationEligible", item.notificationEligible)
+                put("runToken", item.runToken)
             })
         }
     }.toString()

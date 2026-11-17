@@ -4,11 +4,15 @@ import android.content.Context
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
+import androidx.core.content.ContextCompat
 import com.downloadstudio.android.data.DownloadItem
 import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.util.StorageAccess
+import com.downloadstudio.android.notifications.LinkStatusNotification
+import com.downloadstudio.android.notifications.LinkMetadataResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineStart
@@ -23,6 +27,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 object DownloadCoordinator {
     private const val MONITOR_INTERVAL_MS = 2_000L
@@ -38,9 +43,11 @@ object DownloadCoordinator {
     // list mutations and persistence so one worker cannot overwrite another's
     // most recent progress or status update.
     private val stateLock = Any()
+    private val initializationLock = Any()
     private val active = ConcurrentHashMap<String, Job>()
     private val cancelled = ConcurrentHashMap.newKeySet<String>()
     private val thermalDeferred = ConcurrentHashMap.newKeySet<String>()
+    private val monitorServiceRequested = AtomicBoolean(false)
     private val _items = MutableStateFlow<List<DownloadItem>>(emptyList())
     val items: StateFlow<List<DownloadItem>> = _items.asStateFlow()
     private val _thermalStatus = MutableStateFlow("Thermal guard: checking device")
@@ -51,11 +58,17 @@ object DownloadCoordinator {
     @Volatile private var bulkClearing = false
 
     fun initialize(context: Context) {
-        if (initialized) return
-        appContext = context.applicationContext
-        maxConcurrent = QueueStore.maxConcurrent(appContext)
-        _items.value = QueueStore.load(appContext)
-        initialized = true
+        synchronized(initializationLock) {
+            if (initialized) return
+            appContext = context.applicationContext
+            maxConcurrent = QueueStore.maxConcurrent(appContext)
+            _items.value = QueueStore.load(appContext)
+                .sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+            initialized = true
+        }
+        if (_items.value.any { it.status in MONITORED_STATUSES || (it.status == DownloadStatus.QUEUED && !it.awaitingChoice) }) {
+            startMonitoringService()
+        }
         registerThermalGuard()
         scope.launch {
             if (StorageAccess.isDownloadLocationConfigured(appContext) && _items.value.isEmpty()) {
@@ -69,6 +82,7 @@ object DownloadCoordinator {
                 }
             }
             if (StorageAccess.isDownloadLocationConfigured(appContext)) {
+                reconcileCompletedFiles()
                 resumeExistingDownloads(_items.value)
                 QueueStore.mirrorBackup(appContext, _items.value, force = true)
             }
@@ -112,7 +126,7 @@ object DownloadCoordinator {
         _items.value.filter { it.id in active.keys && it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }.forEach { item ->
             if (thermalDeferred.add(item.id)) {
                 update(item.id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Paused automatically because the device is too warm. It will resume after cooling.") }
-                signal(item.id, "INT")
+                signal(item.id, "INT", item.runToken)
             }
         }
     }
@@ -137,9 +151,98 @@ object DownloadCoordinator {
                     }
                 }
             }
+            reconcileCompletedFiles()
             resumeExistingDownloads(_items.value)
             QueueStore.mirrorBackup(appContext, _items.value, force = true)
             pump()
+        }
+    }
+
+    private fun nextArrivalTimestampLocked(): Long = maxOf(
+        System.currentTimeMillis(),
+        (_items.value.maxOfOrNull { it.createdAt } ?: 0L) + 1L
+    )
+
+    /**
+     * If an output no longer exists at its recorded path, look for that exact
+     * filename inside the configured tree. A unique match updates its path;
+     * a complete scan with no match removes only the record, never the file.
+     * Ambiguous or incomplete scans preserve the queue item.
+     */
+    private fun reconcileCompletedFiles() {
+        if (!StorageAccess.isDownloadLocationConfigured(appContext)) return
+        val completed = _items.value.filter {
+            it.status == DownloadStatus.COMPLETED && it.outputPath.isNotBlank()
+        }
+        if (completed.isEmpty()) return
+
+        val movedPaths = mutableMapOf<String, String>()
+        val missingIds = mutableSetOf<String>()
+        completed.forEach { item ->
+            if (StorageAccess.findDownloadedDocument(appContext, item.outputPath) != null) return@forEach
+            val fileName = item.outputPath.substringAfterLast('/').takeIf { it.isNotBlank() } ?: return@forEach
+            val scan = StorageAccess.scanConfiguredDownloadsFolder(appContext, fileName) ?: return@forEach
+            if (!scan.complete) return@forEach
+            when (scan.matches.size) {
+                0 -> missingIds.add(item.id)
+                1 -> movedPaths[item.id] = scan.matches.first()
+                else -> Unit
+            }
+        }
+        if (missingIds.isEmpty() && movedPaths.isEmpty()) return
+
+        val originalById = completed.associateBy { it.id }
+        val actuallyRemoved = mutableSetOf<String>()
+        synchronized(stateLock) {
+            _items.value = _items.value.mapNotNull { current ->
+                val original = originalById[current.id] ?: return@mapNotNull current
+                // A retry or another state change may have happened while the SAF tree was scanned.
+                if (current.status != DownloadStatus.COMPLETED || current.outputPath != original.outputPath) {
+                    return@mapNotNull current
+                }
+                if (current.id in missingIds) {
+                    actuallyRemoved.add(current.id)
+                    return@mapNotNull null
+                }
+                val newPath = movedPaths[current.id] ?: return@mapNotNull current
+                current.copy(outputPath = newPath)
+            }
+            QueueStore.save(appContext, _items.value, durable = true)
+        }
+        actuallyRemoved.forEach { id ->
+            LinkMetadataResolver.cancel(appContext, id)
+            LinkStatusNotification.cancel(appContext, id)
+        }
+    }
+
+    fun synchronizeDownloadsFolder() {
+        if (!initialized) return
+        scope.launch(Dispatchers.IO) {
+            reconcileCompletedFiles()
+            QueueStore.mirrorBackup(appContext, _items.value, force = false)
+        }
+    }
+
+    fun onMonitorServiceStarted() {
+        monitorServiceRequested.set(true)
+    }
+
+    fun onMonitorServiceStopped() {
+        monitorServiceRequested.set(false)
+    }
+
+    private fun startMonitoringService() {
+        if (!initialized) return
+        val hasWork = _items.value.any { !it.awaitingChoice && it.status in setOf(DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING) }
+        if (!hasWork || !monitorServiceRequested.compareAndSet(false, true)) return
+        runCatching {
+            ContextCompat.startForegroundService(
+                appContext,
+                android.content.Intent(appContext, DownloadMonitorService::class.java)
+            )
+        }.onFailure {
+            monitorServiceRequested.set(false)
+            Log.w("DownloadStudio", "Could not start the foreground download monitor", it)
         }
     }
 
@@ -152,34 +255,144 @@ object DownloadCoordinator {
                 DownloadStatus.PAUSED
             )
         }.forEach { item ->
-            if (!active.containsKey(item.id)) {
-                val monitor = scope.launch(start = CoroutineStart.LAZY) { monitorExisting(item) }
-                active[item.id] = monitor
+            val monitor = scope.launch(start = CoroutineStart.LAZY) { monitorExisting(item) }
+            val existing = active.putIfAbsent(item.id, monitor)
+            if (existing == null) {
                 monitor.start()
+            } else {
+                monitor.cancel()
             }
         }
     }
 
-    fun enqueue(url: String, mode: DownloadMode, title: String = "") : String {
+    fun enqueue(url: String, mode: DownloadMode, title: String = ""): String {
         val cleaned = url.trim()
         require(cleaned.startsWith("https://") || cleaned.startsWith("http://")) { "Please provide a valid HTTP or HTTPS link." }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
-        val item = DownloadItem(
-            id = id, url = cleaned, title = title.ifBlank { titleFromUrl(cleaned) }, mode = mode
-        )
         synchronized(stateLock) {
-            _items.value = _items.value + item
-            QueueStore.save(appContext, _items.value)
+            val item = DownloadItem(
+                id = id,
+                url = cleaned,
+                title = title.ifBlank { titleFromUrl(cleaned) },
+                mode = mode,
+                createdAt = nextArrivalTimestampLocked()
+            )
+            _items.value = (_items.value + item)
+                .sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+            QueueStore.save(appContext, _items.value, durable = true)
         }
+        startMonitoringService()
         pump()
         return id
     }
+
+    /**
+     * Add a link to the persistent queue without starting the download.
+     * A user must explicitly choose video or audio from the queue row.
+     */
+    fun enqueueForChoice(url: String, preferredMode: DownloadMode = DownloadMode.VIDEO, notificationEligible: Boolean = false): String {
+        val cleaned = url.trim()
+        val uri = android.net.Uri.parse(cleaned)
+        require((uri.scheme == "https" || uri.scheme == "http") && !uri.host.isNullOrBlank() && uri.userInfo == null) {
+            "Please provide a valid HTTP or HTTPS media link."
+        }
+        require(cleaned.length <= 4096) { "The media link is too long." }
+        val id = UUID.randomUUID().toString().replace("-", "").take(12)
+        synchronized(stateLock) {
+            val item = DownloadItem(
+                id = id,
+                url = cleaned,
+                title = titleFromUrl(cleaned),
+                mode = preferredMode,
+                createdAt = nextArrivalTimestampLocked(),
+                awaitingChoice = true,
+                sourceName = sourceNameFromUrl(cleaned),
+                notificationEligible = notificationEligible
+            )
+            _items.value = (_items.value + item)
+                .sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+            QueueStore.save(appContext, _items.value, durable = true)
+        }
+        return id
+    }
+
+    /** Update metadata on the same waiting queue entry; never create a second row. */
+    fun updateLinkMetadata(
+        id: String,
+        title: String,
+        thumbnailUrl: String,
+        durationSeconds: Long,
+        estimatedSizeBytes: Long,
+        sourceName: String
+    ): Boolean {
+        var updated = false
+        synchronized(stateLock) {
+            val current = _items.value.firstOrNull { it.id == id && it.awaitingChoice } ?: return false
+            _items.value = _items.value.map { item ->
+                if (item.id != id) item else item.copy(
+                    title = title.takeIf { it.isNotBlank() } ?: current.title,
+                    thumbnailUrl = thumbnailUrl.takeIf { it.isNotBlank() } ?: current.thumbnailUrl,
+                    durationSeconds = durationSeconds.takeIf { it > 0L } ?: current.durationSeconds,
+                    estimatedSizeBytes = estimatedSizeBytes.takeIf { it > 0L } ?: current.estimatedSizeBytes,
+                    sourceName = sourceName.takeIf { it.isNotBlank() } ?: current.sourceName
+                )
+            }
+            QueueStore.save(appContext, _items.value)
+            updated = true
+        }
+        return updated
+    }
+
+    /** Turn a waiting link into a normal download, retaining its queue identity. */
+    fun chooseLinkDownload(id: String, mode: DownloadMode): Boolean {
+        var chosen = false
+        synchronized(stateLock) {
+            val current = _items.value.firstOrNull { it.id == id && it.awaitingChoice } ?: return false
+            _items.value = _items.value.map { item ->
+                if (item.id != id) item else item.copy(
+                    mode = mode,
+                    status = DownloadStatus.QUEUED,
+                    awaitingChoice = false,
+                    progress = 0f,
+                    speed = "—",
+                    eta = "—",
+                    downloaded = "—",
+                    error = ""
+                )
+            }
+            QueueStore.save(appContext, _items.value, durable = true)
+            chosen = true
+        }
+        if (chosen) {
+            startMonitoringService()
+            LinkMetadataResolver.cancel(appContext, id)
+            LinkStatusNotification.cancel(appContext, id)
+            pump()
+        }
+        return chosen
+    }
+
+    private fun sourceNameFromUrl(raw: String): String = runCatching {
+        val host = android.net.Uri.parse(raw).host.orEmpty().lowercase()
+            .removePrefix("www.").removePrefix("m.")
+        when {
+            host == "youtu.be" || host.endsWith("youtube.com") -> "YouTube"
+            host == "facebook.com" || host.endsWith(".facebook.com") || host.endsWith("fb.watch") -> "Facebook"
+            host == "instagram.com" || host.endsWith(".instagram.com") -> "Instagram"
+            host == "tiktok.com" || host.endsWith(".tiktok.com") -> "TikTok"
+            host == "x.com" || host == "twitter.com" -> "X"
+            host == "vimeo.com" || host.endsWith(".vimeo.com") -> "Vimeo"
+            host == "reddit.com" || host.endsWith(".reddit.com") -> "Reddit"
+            host.isBlank() -> "Website"
+            else -> host.substringBefore(':').replaceFirstChar { it.uppercase() }
+        }
+    }.getOrDefault("Website")
 
     fun pause(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
         if (item.status != DownloadStatus.DOWNLOADING && item.status != DownloadStatus.STARTING) return
         update(id) { it.copy(status = DownloadStatus.PAUSED, speed = "Paused", error = "") }
-        signal(id, "STOP")
+        signal(id, "STOP", item.runToken)
     }
 
     fun resume(id: String) {
@@ -190,18 +403,18 @@ object DownloadCoordinator {
             return
         }
         update(id) { it.copy(status = DownloadStatus.DOWNLOADING, speed = "Resuming…", error = "") }
-        signal(id, "CONT")
+        signal(id, "CONT", item.runToken)
     }
 
     fun stop(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
-        val running = item.status in setOf(
+        val running = id in active.keys || item.status in setOf(
             DownloadStatus.STARTING, DownloadStatus.DOWNLOADING,
             DownloadStatus.PAUSED, DownloadStatus.PROCESSING
         )
         if (running) {
             cancelled.add(id)
-            signal(id, "INT")
+            signal(id, "INT", item.runToken)
         } else cancelled.remove(id)
         thermalDeferred.remove(id)
         update(id) {
@@ -228,21 +441,25 @@ object DownloadCoordinator {
                 eta = "—",
                 downloaded = "—",
                 outputPath = "",
+                runToken = "",
                 error = ""
             )
         }
+        startMonitoringService()
         pump()
     }
 
     fun remove(id: String) {
         val item = _items.value.firstOrNull { it.id == id } ?: return
-        if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)) {
+        if (id in active.keys || item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)) {
             stop(id)
         }
         synchronized(stateLock) {
             _items.value = _items.value.filterNot { it.id == id }
-            QueueStore.save(appContext, _items.value)
+            QueueStore.save(appContext, _items.value, durable = true)
         }
+        LinkMetadataResolver.cancel(appContext, id)
+        LinkStatusNotification.cancel(appContext, id)
     }
 
     fun clearFinished() {
@@ -250,7 +467,7 @@ object DownloadCoordinator {
             _items.value = _items.value.filterNot {
                 it.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.STOPPED)
             }
-            QueueStore.save(appContext, _items.value)
+            QueueStore.save(appContext, _items.value, durable = true)
         }
     }
 
@@ -258,42 +475,60 @@ object DownloadCoordinator {
         // Close the queue pump gate before taking the snapshot. Workers that finish
         // during this operation must not launch another queued item.
         bulkClearing = true
-        val idsToStop = synchronized(stateLock) {
+        val clearSnapshot = synchronized(stateLock) {
+            val notificationIds = _items.value.map { it.id }
             val ids = (active.keys + _items.value.filter {
                 it.status in setOf(
                     DownloadStatus.DOWNLOADING, DownloadStatus.STARTING,
                     DownloadStatus.PAUSED, DownloadStatus.PROCESSING
                 )
             }.map { it.id }).toSet()
+            val runTokens = _items.value.associate { it.id to it.runToken }
             _items.value = emptyList()
-            QueueStore.save(appContext, emptyList())
-            ids
+            QueueStore.save(appContext, emptyList(), durable = true)
+            Triple(ids, notificationIds, runTokens)
+        }
+        clearSnapshot.second.forEach {
+            LinkMetadataResolver.cancel(appContext, it)
+            LinkStatusNotification.cancel(appContext, it)
         }
 
-        idsToStop.forEach { id ->
+        clearSnapshot.first.forEach { id ->
             cancelled.add(id)
             thermalDeferred.remove(id)
-            signal(id, "INT")
+            signal(id, "INT", clearSnapshot.third[id].orEmpty())
             active[id]?.cancel()
         }
-        // No queued records remain; a later enqueue can safely restart the pump.
+        // A share-link can arrive from another app while the clear operation is in
+        // progress. Its pump call may have observed bulkClearing=true, so pump once
+        // more after opening the gate to avoid leaving that new item idle.
         bulkClearing = false
+        pump()
     }
 
-    private fun signal(id: String, signal: String) {
+    private fun signal(id: String, signal: String, runTokenOverride: String? = null) {
+        val item = _items.value.firstOrNull { it.id == id }
+        if (item == null && runTokenOverride == null) return
+        val runToken = runTokenOverride ?: item?.runToken.orEmpty()
         val dest = StorageAccess.destinationPath(appContext) ?: return
         scope.launch {
-            TermuxBridge.runShell(appContext, TermuxBridge.signalScript(dest, id, signal), "Download Studio · $signal", true)
+            TermuxBridge.runShell(
+                appContext,
+                TermuxBridge.signalScript(dest, id, signal, runToken),
+                "Download Studio · $signal",
+                true
+            )
         }
     }
 
     private fun pump() {
+        startMonitoringService()
         if (!initialized || bulkClearing || StorageAccess.destinationPath(appContext).isNullOrBlank()) return
         if (currentThermalStatus >= THERMAL_DEFER_THRESHOLD) return
         scope.launch {
             mutex.withLock {
                 while (!bulkClearing && active.size < maxConcurrent && currentThermalStatus < THERMAL_DEFER_THRESHOLD) {
-                    val next = _items.value.firstOrNull { it.status == DownloadStatus.QUEUED && it.id !in active.keys } ?: break
+                    val next = _items.value.firstOrNull { it.status == DownloadStatus.QUEUED && !it.awaitingChoice && it.id !in active.keys } ?: break
                     val worker = scope.launch(start = CoroutineStart.LAZY) { runJob(next) }
                     active[next.id] = worker
                     worker.start()
@@ -303,6 +538,7 @@ object DownloadCoordinator {
     }
 
     private suspend fun runJob(original: DownloadItem) {
+        startMonitoringService()
         val id = original.id
         try {
             val destination = StorageAccess.destinationPath(appContext)
@@ -325,12 +561,46 @@ object DownloadCoordinator {
             // The previous attempt may have been interrupted by thermal protection.
             // Clear that marker only after the thermal gate allows a real retry.
             thermalDeferred.remove(id)
-            update(id) { it.copy(status = DownloadStatus.STARTING, progress = 0f, speed = "Starting…", eta = "—", error = "") }
-            val script = TermuxBridge.downloadScript(id, original.url, original.mode.name, destination)
+            val runToken = UUID.randomUUID().toString().replace("-", "")
+            update(id, durable = true) {
+                it.copy(
+                    status = DownloadStatus.STARTING,
+                    progress = 0f,
+                    speed = "Starting…",
+                    eta = "—",
+                    error = "",
+                    runToken = runToken
+                )
+            }
+            val executionKey = "$id-$runToken"
+            val beforeLaunch = _items.value.firstOrNull { it.id == id }
+            if (beforeLaunch == null || beforeLaunch.status == DownloadStatus.STOPPED || id in cancelled) return
+            val script = TermuxBridge.downloadScript(id, original.url, original.mode.name, destination, runToken)
             val launch = TermuxBridge.runShell(appContext, script, "Download Studio · ${original.mode.name.lowercase()}", true)
             if (launch.isFailure) throw launch.exceptionOrNull() ?: IllegalStateException("Termux could not start the download.")
-            update(id) { current ->
-                if (current.status == DownloadStatus.PAUSED) current else current.copy(status = DownloadStatus.DOWNLOADING, speed = "Connecting…")
+
+            val afterLaunch = _items.value.firstOrNull { it.id == id }
+            if (afterLaunch == null || afterLaunch.status == DownloadStatus.STOPPED || id in cancelled) {
+                // The queue item may have been removed while Android was handing the command to Termux.
+                signal(id, "INT", runToken)
+                return
+            }
+            when {
+                afterLaunch.status == DownloadStatus.PAUSED -> signal(id, "STOP", runToken)
+                afterLaunch.status == DownloadStatus.QUEUED || id in thermalDeferred -> {
+                    // A thermal callback may have queued the row during the Termux hand-off.
+                    update(id) { current ->
+                        if (current.status in setOf(DownloadStatus.STOPPED, DownloadStatus.PAUSED)) current
+                        else current.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—")
+                    }
+                    signal(id, "INT", runToken)
+                }
+                afterLaunch.status == DownloadStatus.STARTING -> {
+                    update(id) { current ->
+                        if (current.status == DownloadStatus.STARTING) current.copy(status = DownloadStatus.DOWNLOADING, speed = "Connecting…")
+                        else current
+                    }
+                }
             }
 
             var lastLog = ""
@@ -339,20 +609,23 @@ object DownloadCoordinator {
             var sawPid = false
             var stopReason = ""
             while (SystemClock.elapsedRealtime() - startAt < MAX_DOWNLOAD_RUNTIME_MS) {
-                val current = _items.value.firstOrNull { it.id == id } ?: break
-                if (current.status == DownloadStatus.STOPPED || id in cancelled) break
+                val current = _items.value.firstOrNull { it.id == id }
+                if (current == null || current.status == DownloadStatus.STOPPED || id in cancelled) {
+                    signal(id, "INT", runToken)
+                    break
+                }
                 if (current.status == DownloadStatus.PAUSED) {
                     lastActivityAt = SystemClock.elapsedRealtime()
                     delay(MONITOR_INTERVAL_MS * 2)
                     continue
                 }
-                val log = StorageAccess.readStateTail(appContext, "DownloadStudioState/$id.log").orEmpty()
+                val log = StorageAccess.readStateTail(appContext, "DownloadStudioState/$executionKey.log").orEmpty()
                 if (log != lastLog) {
                     lastLog = log
                     lastActivityAt = SystemClock.elapsedRealtime()
                     parseProgress(id, log)
                 }
-                val exit = StorageAccess.readState(appContext, "DownloadStudioState/$id.exit")?.trim()
+                val exit = StorageAccess.readState(appContext, "DownloadStudioState/$executionKey.exit")?.trim()
                 if (!exit.isNullOrBlank()) {
                     val code = exit.toIntOrNull() ?: 1
                     if (id in cancelled || _items.value.firstOrNull { it.id == id }?.status == DownloadStatus.STOPPED) break
@@ -382,7 +655,7 @@ object DownloadCoordinator {
                     }
                     break
                 }
-                val pid = StorageAccess.readState(appContext, "DownloadStudioState/$id.pid")?.trim().orEmpty()
+                val pid = StorageAccess.readState(appContext, "DownloadStudioState/$executionKey.pid")?.trim().orEmpty()
                 if (pid.isNotBlank()) sawPid = true
                 val now = SystemClock.elapsedRealtime()
                 if (!sawPid && now - startAt > START_TIMEOUT_MS) {
@@ -399,7 +672,7 @@ object DownloadCoordinator {
                 }
                 if (currentThermalStatus >= THERMAL_STOP_THRESHOLD && thermalDeferred.add(id)) {
                     update(id) { it.copy(status = DownloadStatus.QUEUED, speed = "—", eta = "—", error = "Paused automatically because the device was too warm. It will resume after cooling.") }
-                    signal(id, "INT")
+                    signal(id, "INT", runToken)
                 }
                 delay(MONITOR_INTERVAL_MS)
             }
@@ -407,7 +680,7 @@ object DownloadCoordinator {
                 stopReason = "Download stopped at the six-hour safety limit. You can retry it."
             }
             if (stopReason.isNotBlank()) {
-                signal(id, "INT")
+                signal(id, "INT", runToken)
                 if (id !in thermalDeferred) update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = stopReason) }
             }
         } catch (e: Exception) {
@@ -427,8 +700,10 @@ object DownloadCoordinator {
             val startAt = SystemClock.elapsedRealtime()
             var lastActivityAt = startAt
             var lastLog = ""
-            val logPath = "DownloadStudioState/$id.log"
-            val pidPath = "DownloadStudioState/$id.pid"
+            val executionKey = if (item.runToken.isBlank()) id else "$id-${item.runToken}"
+            val logPath = "DownloadStudioState/$executionKey.log"
+            val pidPath = "DownloadStudioState/$executionKey.pid"
+            val exitPath = "DownloadStudioState/$executionKey.exit"
             while (SystemClock.elapsedRealtime() - startAt < MAX_DOWNLOAD_RUNTIME_MS) {
                 val current = _items.value.firstOrNull { it.id == id } ?: break
                 if (current.status == DownloadStatus.STOPPED || id in cancelled) break
@@ -443,7 +718,7 @@ object DownloadCoordinator {
                     lastActivityAt = SystemClock.elapsedRealtime()
                     parseProgress(id, log)
                 }
-                val exit = StorageAccess.readState(appContext, "DownloadStudioState/$id.exit")?.trim()
+                val exit = StorageAccess.readState(appContext, exitPath)?.trim()
                 if (!exit.isNullOrBlank()) {
                     val code = exit.toIntOrNull() ?: 1
                     if (id in thermalDeferred) {
@@ -475,18 +750,19 @@ object DownloadCoordinator {
                     break
                 }
                 if (now - lastActivityAt > STALL_TIMEOUT_MS) {
-                    signal(id, "INT")
+                    signal(id, "INT", item.runToken)
                     update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = "Download monitoring detected no activity for 15 minutes. Retry when ready.") }
                     break
                 }
                 delay(MONITOR_INTERVAL_MS)
             }
             if (SystemClock.elapsedRealtime() - startAt >= MAX_DOWNLOAD_RUNTIME_MS) {
-                signal(id, "INT")
+                signal(id, "INT", item.runToken)
                 update(id) { it.copy(status = DownloadStatus.FAILED, speed = "—", eta = "—", error = "Download stopped at the six-hour safety limit.") }
             }
         } finally {
             active.remove(id)
+            cancelled.remove(id)
             thermalDeferred.remove(id)
             persist()
             pump()
@@ -561,10 +837,14 @@ object DownloadCoordinator {
         }
     }
 
-    private fun update(id: String, transform: (DownloadItem) -> DownloadItem) {
+    private fun update(
+        id: String,
+        durable: Boolean = false,
+        transform: (DownloadItem) -> DownloadItem
+    ) {
         synchronized(stateLock) {
             _items.value = _items.value.map { if (it.id == id) transform(it) else it }
-            QueueStore.save(appContext, _items.value)
+            QueueStore.save(appContext, _items.value, durable = durable)
         }
     }
 
@@ -573,6 +853,8 @@ object DownloadCoordinator {
             QueueStore.save(appContext, _items.value)
         }
     }
+
+    private val MONITORED_STATUSES = setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED)
 
     private fun humanBytes(value: Long): String {
         if (value <= 0) return "—"

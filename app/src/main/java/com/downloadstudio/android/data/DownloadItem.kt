@@ -17,7 +17,13 @@ data class DownloadItem(
     val error: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val completedAt: Long = 0L,
-    val thumbnailUrl: String = ""
+    val thumbnailUrl: String = "",
+    val awaitingChoice: Boolean = false,
+    val sourceName: String = "",
+    val durationSeconds: Long = 0L,
+    val estimatedSizeBytes: Long = 0L,
+    val notificationEligible: Boolean = false,
+    val runToken: String = ""
 )
 
 enum class DownloadMode { VIDEO, AUDIO }

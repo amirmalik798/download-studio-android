@@ -1,11 +1,13 @@
 package com.downloadstudio.android
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.Settings
 import android.widget.Toast
@@ -13,10 +15,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items as lazyItems
@@ -47,6 +51,7 @@ import com.downloadstudio.android.data.DownloadMode
 import com.downloadstudio.android.data.DownloadStatus
 import com.downloadstudio.android.data.QueueStore
 import com.downloadstudio.android.engine.DownloadCoordinator
+import com.downloadstudio.android.notifications.LinkStatusNotification
 import com.downloadstudio.android.engine.TermuxBridge
 import com.downloadstudio.android.util.StorageAccess
 import kotlinx.coroutines.Dispatchers
@@ -73,6 +78,45 @@ private val Violet = Color(0xFFA78BFA)
 private val Red = Color(0xFFFF7185)
 
 class MainActivity : ComponentActivity() {
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            LinkStatusNotification.ensureChannel(this)
+            LinkStatusNotification.showPending(this)
+        } else {
+            Toast.makeText(
+                this,
+                "Notifications are disabled. Enable them in Settings to see when shared links are accepted.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    override fun onPostResume() {
+        super.onPostResume()
+        DownloadCoordinator.synchronizeDownloadsFolder()
+        LinkStatusNotification.ensureChannel(this)
+
+        if (LinkStatusNotification.canPost(this)) {
+            // Recover shared links accepted while permission was missing or the
+            // app was returning from Android notification settings.
+            LinkStatusNotification.showPending(this)
+            return
+        }
+
+        val hasRuntimePermission = Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (!hasRuntimePermission) {
+            val preferences = getSharedPreferences("download_studio_notification_state", MODE_PRIVATE)
+            val alreadyRequested = preferences.getBoolean("notification_permission_request_started_v1", false)
+            if (!alreadyRequested) {
+                preferences.edit().putBoolean("notification_permission_request_started_v1", true).apply()
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = android.graphics.Color.rgb(9, 14, 25)
@@ -103,6 +147,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncoming(intent: Intent?) {
+        val notificationQueueId = intent
+            ?.takeIf { it.action == Intent.ACTION_VIEW }
+            ?.data
+            ?.takeIf { it.scheme == "downloadstudio" && it.host == "queue" }
+            ?.lastPathSegment
+        if (!notificationQueueId.isNullOrBlank()) {
+            // Opening the status notification is an explicit dismissal of that
+            // notification, but it must never remove the underlying queue item.
+            LinkStatusNotification.markDismissed(applicationContext, notificationQueueId)
+            return
+        }
         val raw = when (intent?.action) {
             Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
             Intent.ACTION_VIEW -> intent.dataString
@@ -137,7 +192,6 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
             }.getOrDefault(DownloadMode.VIDEO)
         )
     }
-    var selected by remember { mutableStateOf<DownloadItem?>(null) }
     var setupReady by remember {
         mutableStateOf(StorageAccess.isDownloadLocationConfigured(context) &&
             TermuxBridge.isInstalled(context) && TermuxBridge.hasRunPermission(context))
@@ -164,8 +218,6 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
                 runCatching { context.startActivity(openIntent) }
                     .onFailure { Toast.makeText(context, "No compatible app is available to open this file.", Toast.LENGTH_LONG).show() }
             }
-        } else {
-            selected = item
         }
     }
     val incoming = MainActivity.pendingSharedUrl
@@ -190,7 +242,10 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().background(Ink).padding(padding)) {
-            TopHeader(tab) { tab = AppTab.SETTINGS }
+            // Downloads uses its own compact toolbar; keep the branded header on Home and Settings.
+            if (tab != AppTab.DOWNLOADS) {
+                TopHeader(tab) { tab = AppTab.SETTINGS }
+            }
             when (tab) {
                 AppTab.HOME -> if (setupReady) HomeScreen(
                     items = items, url = url, onUrl = { url = it }, mode = mode,
@@ -219,10 +274,6 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
                 AppTab.SETTINGS -> SettingsScreen(setupRequired = !setupReady)
             }
         }
-    }
-
-    selected?.let { item ->
-        DownloadDetailsDialog(item, onDismiss = { selected = null })
     }
 
     pendingFolderManagerTargets?.let { targets ->
@@ -407,115 +458,337 @@ private fun ShareFeatureCard() {
 }
 
 private enum class DownloadSort(val label: String) {
+    NEWEST_ARRIVALS("Newest arrivals first"),
     NAME_ASC("Name · A–Z"),
     NAME_DESC("Name · Z–A"),
     DATE_NEWEST("Date · Newest first"),
     DATE_OLDEST("Date · Oldest first")
 }
 
-private enum class DownloadFilter { ALL, VIDEO, AUDIO, DOWNLOADING, DOWNLOADED }
+private enum class DownloadFilter(val label: String) {
+    ALL("All"),
+    ACTIVE("Active"),
+    QUEUED("Queued"),
+    DOWNLOADING("Downloading"),
+    COMPLETED("Completed"),
+    FAILED("Failed"),
+    VIDEO("Video"),
+    AUDIO("Audio"),
+    TODAY("Today")
+}
 
 @Composable
 private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem) -> Unit) {
     var search by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(DownloadFilter.ALL) }
-    var sort by remember { mutableStateOf(DownloadSort.DATE_NEWEST) }
+    var sort by remember { mutableStateOf(DownloadSort.NEWEST_ARRIVALS) }
     var sortExpanded by remember { mutableStateOf(false) }
-    var toolsExpanded by remember { mutableStateOf(false) }
+    var advancedFilters by remember { mutableStateOf(false) }
+    var helpOpen by remember { mutableStateOf(false) }
     var showClearConfirmation by remember { mutableStateOf(false) }
     var itemPendingRemoval by remember { mutableStateOf<DownloadItem?>(null) }
-    val active = items.count { it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING) }
-    val visibleItems = remember(items, search, filter, sort) {
-        val matches = items.filter { item ->
-            val categoryMatches = when (filter) {
-                DownloadFilter.ALL -> true
-                DownloadFilter.VIDEO -> item.mode == DownloadMode.VIDEO
-                DownloadFilter.AUDIO -> item.mode == DownloadMode.AUDIO
-                DownloadFilter.DOWNLOADING -> item.status in setOf(DownloadStatus.QUEUED, DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING)
-                DownloadFilter.DOWNLOADED -> item.status == DownloadStatus.COMPLETED
-            }
-            categoryMatches && displayTitle(item).contains(search.trim(), ignoreCase = true)
-        }
-        when (sort) {
-            DownloadSort.NAME_ASC -> matches.sortedBy { displayTitle(it).lowercase(Locale.ROOT) }
-            DownloadSort.NAME_DESC -> matches.sortedByDescending { displayTitle(it).lowercase(Locale.ROOT) }
-            DownloadSort.DATE_NEWEST -> matches.sortedByDescending { downloadTimestamp(it) }
-            DownloadSort.DATE_OLDEST -> matches.sortedBy { downloadTimestamp(it) }
+    val todayStart = remember { startOfLocalDay(System.currentTimeMillis()) }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            delay(30_000L)
+            DownloadCoordinator.synchronizeDownloadsFolder()
         }
     }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Downloads", color = TextMain, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
-                Text("${items.size} items · $active active · ${items.count { it.status == DownloadStatus.COMPLETED }} completed", color = TextMuted, fontSize = 11.sp)
+    val activeCount = items.count {
+        it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING)
+    }
+    val queuedCount = items.count { it.awaitingChoice || it.status == DownloadStatus.QUEUED }
+    val completedCount = items.count { it.status == DownloadStatus.COMPLETED }
+    val failedCount = items.count { it.status in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED) }
+    val counts = mapOf(
+        DownloadFilter.ALL to items.size,
+        DownloadFilter.ACTIVE to items.count {
+            it.status in setOf(DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED)
+        },
+        DownloadFilter.QUEUED to queuedCount,
+        DownloadFilter.DOWNLOADING to activeCount,
+        DownloadFilter.COMPLETED to completedCount,
+        DownloadFilter.FAILED to failedCount,
+        DownloadFilter.VIDEO to items.count { it.awaitingChoice || it.mode == DownloadMode.VIDEO },
+        DownloadFilter.AUDIO to items.count { it.awaitingChoice || it.mode == DownloadMode.AUDIO },
+        DownloadFilter.TODAY to items.count { it.createdAt >= todayStart }
+    )
+
+    val visibleItems = remember(items, search, filter, todayStart, sort) {
+        val matches = items.filter { item ->
+            val matchesFilter = when (filter) {
+                DownloadFilter.ALL -> true
+                DownloadFilter.ACTIVE -> item.status in setOf(
+                    DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.PAUSED
+                )
+                DownloadFilter.QUEUED -> item.awaitingChoice || item.status == DownloadStatus.QUEUED
+                DownloadFilter.DOWNLOADING -> item.status in setOf(
+                    DownloadStatus.STARTING, DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING
+                )
+                DownloadFilter.COMPLETED -> item.status == DownloadStatus.COMPLETED
+                DownloadFilter.FAILED -> item.status in setOf(DownloadStatus.FAILED, DownloadStatus.STOPPED)
+                DownloadFilter.VIDEO -> item.awaitingChoice || item.mode == DownloadMode.VIDEO
+                DownloadFilter.AUDIO -> item.awaitingChoice || item.mode == DownloadMode.AUDIO
+                DownloadFilter.TODAY -> item.createdAt >= todayStart
             }
-            Text("${visibleItems.size}", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-            IconButton(onClick = { toolsExpanded = !toolsExpanded }) {
-                Icon(if (toolsExpanded) Icons.Default.Close else Icons.Default.Search, "Search and filters", tint = Cyan)
+            val query = search.trim()
+            matchesFilter && (
+                query.isBlank() ||
+                    displayTitle(item).contains(query, ignoreCase = true) ||
+                    item.sourceName.contains(query, ignoreCase = true) ||
+                    item.url.contains(query, ignoreCase = true)
+                )
+        }
+        when (sort) {
+            DownloadSort.NEWEST_ARRIVALS ->
+                matches.sortedWith(compareByDescending<DownloadItem> { it.createdAt }.thenByDescending { it.id })
+            DownloadSort.NAME_ASC ->
+                matches.sortedBy { displayTitle(it).lowercase(Locale.ROOT) }
+            DownloadSort.NAME_DESC ->
+                matches.sortedByDescending { displayTitle(it).lowercase(Locale.ROOT) }
+            DownloadSort.DATE_NEWEST ->
+                matches.sortedByDescending { downloadTimestamp(it) }
+            DownloadSort.DATE_OLDEST ->
+                matches.sortedBy { downloadTimestamp(it) }
+        }
+    }
+
+    Column(
+        Modifier.fillMaxSize()
+            .background(Ink)
+            .padding(horizontal = 18.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 42.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Downloads",
+                color = TextMain,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier.weight(1f),
+                maxLines = 1
+            )
+            Box(
+                Modifier.clip(RoundedCornerShape(11.dp))
+                    .background(Panel2)
+                    .border(1.dp, Line, RoundedCornerShape(11.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                Text("${visibleItems.size} / ${items.size}", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            IconButton(onClick = { helpOpen = true }) { Icon(Icons.Default.Info, "Downloads help", tint = TextMuted) }
+            IconButton(onClick = { advancedFilters = !advancedFilters }) {
+                Icon(
+                    if (advancedFilters) Icons.Default.Tune else Icons.Default.FilterList,
+                    "More filters",
+                    tint = Cyan
+                )
             }
             IconButton(onClick = { showClearConfirmation = true }, enabled = items.isNotEmpty()) {
                 Icon(Icons.Default.DeleteSweep, "Clear downloads list", tint = if (items.isNotEmpty()) Red else TextMuted)
             }
         }
-        AnimatedVisibility(visible = toolsExpanded) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = search, onValueChange = { search = it }, modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Search by name", color = TextMuted) },
-                    leadingIcon = { Icon(Icons.Default.Search, null, tint = TextMuted) },
-                    trailingIcon = { if (search.isNotBlank()) IconButton(onClick = { search = "" }) { Icon(Icons.Default.Close, "Clear search", tint = TextMuted) } },
-                    singleLine = true, shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = TextMain, unfocusedTextColor = TextMain,
-                        focusedBorderColor = Blue, unfocusedBorderColor = Line, cursorColor = Cyan,
-                        focusedContainerColor = Color(0xFF0C1525), unfocusedContainerColor = Color(0xFF0C1525)))
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-                    FilterChip(selected = filter == DownloadFilter.ALL, onClick = { filter = DownloadFilter.ALL }, label = { Text("All") })
-                    FilterChip(selected = filter == DownloadFilter.VIDEO, onClick = { filter = DownloadFilter.VIDEO }, label = { Text("Video") })
-                    FilterChip(selected = filter == DownloadFilter.AUDIO, onClick = { filter = DownloadFilter.AUDIO }, label = { Text("Audio") })
+        HorizontalDivider(color = Line.copy(alpha = .55f))
+
+        OutlinedTextField(
+            value = search,
+            onValueChange = { search = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Search titles, websites, or links", color = TextMuted) },
+            leadingIcon = { Icon(Icons.Default.Search, null, tint = Cyan) },
+            trailingIcon = {
+                if (search.isNotBlank()) {
+                    IconButton(onClick = { search = "" }) {
+                        Icon(Icons.Default.Close, "Clear search", tint = TextMuted)
+                    }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-                    FilterChip(selected = filter == DownloadFilter.DOWNLOADING, onClick = { filter = DownloadFilter.DOWNLOADING }, label = { Text("Downloading") })
-                    FilterChip(selected = filter == DownloadFilter.DOWNLOADED, onClick = { filter = DownloadFilter.DOWNLOADED }, label = { Text("Downloaded") })
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(15.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = TextMain,
+                unfocusedTextColor = TextMain,
+                focusedBorderColor = Blue,
+                unfocusedBorderColor = Line,
+                cursorColor = Cyan,
+                focusedContainerColor = Panel,
+                unfocusedContainerColor = Panel
+            )
+        )
+
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            DownloadFilterChip(filter, DownloadFilter.ALL, counts) { filter = it }
+            DownloadFilterChip(filter, DownloadFilter.ACTIVE, counts) { filter = it }
+            DownloadFilterChip(filter, DownloadFilter.QUEUED, counts) { filter = it }
+            DownloadFilterChip(filter, DownloadFilter.COMPLETED, counts) { filter = it }
+            DownloadFilterChip(filter, DownloadFilter.FAILED, counts) { filter = it }
+        }
+
+        AnimatedVisibility(visible = advancedFilters) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(Panel)
+                    .border(1.dp, Line, RoundedCornerShape(15.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("FILE TYPE & DATE", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    DownloadFilterChip(filter, DownloadFilter.VIDEO, counts) { filter = it }
+                    DownloadFilterChip(filter, DownloadFilter.AUDIO, counts) { filter = it }
+                    DownloadFilterChip(filter, DownloadFilter.TODAY, counts) { filter = it }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("SORT BY", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .8.sp)
                     Spacer(Modifier.weight(1f))
                     Box {
                         TextButton(onClick = { sortExpanded = true }) {
                             Icon(Icons.Default.Sort, null, tint = Cyan, modifier = Modifier.size(17.dp))
-                            Spacer(Modifier.width(5.dp)); Text(sort.label, color = Cyan, fontSize = 11.sp)
+                            Spacer(Modifier.width(5.dp))
+                            Text(sort.label, color = Cyan, fontSize = 11.sp)
                             Icon(Icons.Default.ArrowDropDown, null, tint = Cyan)
                         }
                         DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
-                            DownloadSort.values().forEach { option -> DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortExpanded = false }) }
+                            DownloadSort.values().forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label, color = TextMain) },
+                                    onClick = { sort = option; sortExpanded = false }
+                                )
+                            }
                         }
                     }
                 }
+                Text(
+                    if (sort == DownloadSort.NEWEST_ARRIVALS)
+                        "A download keeps its arrival position when its status changes."
+                    else "Sort the list without changing saved downloads or queue state.",
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
             }
         }
-        if (showClearConfirmation) {
-            AlertDialog(onDismissRequest = { showClearConfirmation = false }, containerColor = Panel,
-                title = { Text("Clear downloads list?", color = TextMain) },
-                text = { Text("This removes download records and stops active jobs. Files already saved on your device will not be deleted.", color = TextMuted) },
-                confirmButton = { TextButton(onClick = { DownloadCoordinator.clearAll(); showClearConfirmation = false }) { Text("Clear list", color = Red) } },
-                dismissButton = { TextButton(onClick = { showClearConfirmation = false }) { Text("Cancel") } })
+
+        if (filter != DownloadFilter.ALL || search.isNotBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Showing ${visibleItems.size} items", color = TextMuted, fontSize = 10.sp)
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    onClick = { search = ""; filter = DownloadFilter.ALL },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text("Clear filters", color = Cyan, fontSize = 11.sp)
+                }
+            }
         }
-        itemPendingRemoval?.let { item ->
-            AlertDialog(onDismissRequest = { itemPendingRemoval = null }, containerColor = Panel,
-                title = { Text("Remove from downloads?", color = TextMain) },
-                text = { Text("\"${displayTitle(item)}\" will be removed from Download Studio. The actual media file on your device will not be deleted.", color = TextMuted) },
+
+        if (helpOpen) {
+            AlertDialog(
+                onDismissRequest = { helpOpen = false },
+                containerColor = Panel,
+                title = { Text("Downloads help", color = TextMain) },
+                text = {
+                    Text(
+                        "New links always appear at the top. Status filters show active, queued, completed, or failed items. Use More filters for Video, Audio, and Today. Search checks titles, websites, and source links. Removing an entry never deletes the media file. Missing or moved files are reconciled with your selected folder.",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
+                    )
+                },
+                confirmButton = { TextButton(onClick = { helpOpen = false }) { Text("Got it", color = Cyan) } }
+            )
+        }
+
+        if (showClearConfirmation) {
+            AlertDialog(
+                onDismissRequest = { showClearConfirmation = false },
+                containerColor = Panel,
+                title = { Text("Clear downloads list?", color = TextMain) },
+                text = {
+                    Text(
+                        "This removes the records and stops active downloads. Files already saved in your Downloads folder will stay there.",
+                        color = TextMuted
+                    )
+                },
                 confirmButton = {
-                    TextButton(onClick = { DownloadCoordinator.remove(item.id); itemPendingRemoval = null }) {
-                        Text("Remove", color = Red)
+                    TextButton(onClick = { DownloadCoordinator.clearAll(); showClearConfirmation = false }) {
+                        Text("Clear list", color = Red)
                     }
                 },
-                dismissButton = { TextButton(onClick = { itemPendingRemoval = null }) { Text("Cancel") } })
+                dismissButton = {
+                    TextButton(onClick = { showClearConfirmation = false }) { Text("Cancel") }
+                }
+            )
         }
-        Spacer(Modifier.height(5.dp))
+
+        itemPendingRemoval?.let { item ->
+            AlertDialog(
+                onDismissRequest = { itemPendingRemoval = null },
+                containerColor = Panel,
+                shape = RoundedCornerShape(22.dp),
+                tonalElevation = 0.dp,
+                icon = { Icon(Icons.Default.DeleteOutline, null, tint = Red, modifier = Modifier.size(24.dp)) },
+                title = { Text("Remove this entry?", color = TextMain, fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        "\"${displayTitle(item)}\" will be removed from Download Studio. The saved media file will not be deleted.",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { DownloadCoordinator.remove(item.id); itemPendingRemoval = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = Red, contentColor = Color.White),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Remove entry", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = { itemPendingRemoval = null },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Line)
+                    ) {
+                        Text("Keep entry")
+                    }
+                }
+            )
+        }
+
         when {
-            items.isEmpty() -> EmptyState("No downloads yet", "Paste a link or share a supported media URL from another app.", Icons.Default.CloudDownload)
-            visibleItems.isEmpty() -> EmptyState("No matching downloads", "Try another search term or category filter.", Icons.Default.Search)
-            else -> LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
+            items.isEmpty() -> EmptyState(
+                "No downloads yet",
+                "Paste a link or share a supported media URL from another app.",
+                Icons.Default.CloudDownload
+            )
+            visibleItems.isEmpty() -> EmptyState(
+                "No matching downloads",
+                "Try another filter or search. Your downloads are still saved.",
+                Icons.Default.Search
+            )
+            else -> LazyColumn(
+                Modifier.weight(1f)
+                    .fillMaxWidth()
+                    .background(Ink),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(top = 2.dp, bottom = 18.dp)
+            ) {
                 lazyItems(visibleItems, key = { it.id }) { item ->
                     DownloadRow(item, onClick = { onOpenItem(item) }, onRemoveRequest = { itemPendingRemoval = item })
                 }
@@ -525,10 +798,64 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
 }
 
 @Composable
+private fun DownloadFilterChip(
+    selectedFilter: DownloadFilter,
+    option: DownloadFilter,
+    counts: Map<DownloadFilter, Int>,
+    onSelect: (DownloadFilter) -> Unit
+) {
+    val selected = selectedFilter == option
+    val tint = when (option) {
+        DownloadFilter.COMPLETED -> Green
+        DownloadFilter.FAILED -> Red
+        DownloadFilter.QUEUED -> Violet
+        DownloadFilter.VIDEO -> Blue
+        DownloadFilter.AUDIO -> Green
+        else -> Cyan
+    }
+    FilterChip(
+        selected = selected,
+        onClick = { onSelect(if (selected) DownloadFilter.ALL else option) },
+        label = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(option.label, maxLines = 1)
+                Text(
+                    counts[option]?.toString() ?: "0",
+                    color = if (selected) tint else TextMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 9.sp
+                )
+            }
+        },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = tint.copy(alpha = .16f),
+            selectedLabelColor = tint,
+            containerColor = Panel,
+            labelColor = TextMuted
+        ),
+        border = FilterChipDefaults.filterChipBorder(
+            enabled = true,
+            selected = selected,
+            borderColor = Line,
+            selectedBorderColor = tint.copy(alpha = .65f)
+        )
+    )
+}
+
+private fun startOfLocalDay(timestamp: Long): Long {
+    val calendar = java.util.Calendar.getInstance().apply { timeInMillis = timestamp }
+    calendar.set(java.util.Calendar.HOUR_OF_DAY, 0)
+    calendar.set(java.util.Calendar.MINUTE, 0)
+    calendar.set(java.util.Calendar.SECOND, 0)
+    calendar.set(java.util.Calendar.MILLISECOND, 0)
+    return calendar.timeInMillis
+}
+
+@Composable
 private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest: (() -> Unit)? = null) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val color = when (item.status) {
+    val color = if (item.awaitingChoice) Violet else when (item.status) {
         DownloadStatus.COMPLETED -> Green
         DownloadStatus.FAILED -> Red
         DownloadStatus.PAUSED -> Violet
@@ -555,17 +882,27 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                     Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         val isVideo = item.mode == DownloadMode.VIDEO
-                        Box(Modifier.clip(CircleShape).background((if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
-                            Text(if (isVideo) "VIDEO" else "AUDIO", color = if (isVideo) Blue else Green, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                        Box(Modifier.clip(CircleShape).background((if (item.awaitingChoice) Violet else if (isVideo) Blue else Green).copy(alpha = .16f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
+                            Text(if (item.awaitingChoice) "LINK" else if (isVideo) "VIDEO" else "AUDIO", color = if (item.awaitingChoice) Violet else if (isVideo) Blue else Green, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                         }
-                        Text(mediaSiteName(item.url), color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(item.sourceName.ifBlank { mediaSiteName(item.url) }, color = TextMuted, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Box(Modifier.clip(CircleShape).background(color.copy(alpha = .15f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
-                    Text(friendlyStatus(item.status), color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            item.awaitingChoice -> "CHOOSE FORMAT"
+                            item.status == DownloadStatus.COMPLETED -> "Saved"
+                            else -> friendlyStatus(item.status)
+                        },
+                        color = color,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
-                var actionsExpanded by remember(item.id) { mutableStateOf(false) }
-                Box {
+                if (!item.awaitingChoice) {
+                    var actionsExpanded by remember(item.id) { mutableStateOf(false) }
+                    Box {
                     IconButton(onClick = { actionsExpanded = true }, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.MoreVert, "Download actions", tint = TextMuted)
                     }
@@ -587,6 +924,46 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                                 onClick = {
                                     actionsExpanded = false
                                     DownloadCoordinator.retry(item.id)
+                                }
+                            )
+                        }
+                        if (item.status == DownloadStatus.STARTING || item.status == DownloadStatus.DOWNLOADING) {
+                            DropdownMenuItem(
+                                text = { Text("Pause download", color = TextMain, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.Pause, null, tint = Cyan) },
+                                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
+                                onClick = {
+                                    actionsExpanded = false
+                                    DownloadCoordinator.pause(item.id)
+                                }
+                            )
+                        }
+                        if (item.status == DownloadStatus.PAUSED) {
+                            DropdownMenuItem(
+                                text = { Text("Resume download", color = TextMain, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.PlayArrow, null, tint = Green) },
+                                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
+                                onClick = {
+                                    actionsExpanded = false
+                                    DownloadCoordinator.resume(item.id)
+                                }
+                            )
+                        }
+                        if (item.status in setOf(
+                                DownloadStatus.QUEUED,
+                                DownloadStatus.STARTING,
+                                DownloadStatus.DOWNLOADING,
+                                DownloadStatus.PAUSED,
+                                DownloadStatus.PROCESSING
+                            )
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Stop download", color = Red, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.Stop, null, tint = Red) },
+                                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 3.dp),
+                                onClick = {
+                                    actionsExpanded = false
+                                    DownloadCoordinator.stop(item.id)
                                 }
                             )
                         }
@@ -627,8 +1004,46 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                             onClick = { actionsExpanded = false; onRemoveRequest?.invoke() }
                         )
                     }
+                    }
                 }
             }
+            if (item.awaitingChoice && onRemoveRequest != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Choose a format", color = TextMuted, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                    IconButton(
+                        onClick = { DownloadCoordinator.chooseLinkDownload(item.id, DownloadMode.VIDEO) },
+                        modifier = Modifier.size(42.dp).clip(RoundedCornerShape(12.dp))
+                            .background(Blue.copy(alpha = .18f))
+                            .border(1.dp, Blue.copy(alpha = .55f), RoundedCornerShape(12.dp))
+                    ) { Icon(Icons.Default.VideoLibrary, "Download video", tint = Blue, modifier = Modifier.size(21.dp)) }
+                    IconButton(
+                        onClick = { DownloadCoordinator.chooseLinkDownload(item.id, DownloadMode.AUDIO) },
+                        modifier = Modifier.size(42.dp).clip(RoundedCornerShape(12.dp))
+                            .background(Green.copy(alpha = .16f))
+                            .border(1.dp, Green.copy(alpha = .5f), RoundedCornerShape(12.dp))
+                    ) { Icon(Icons.Default.MusicNote, "Download audio", tint = Green, modifier = Modifier.size(21.dp)) }
+                    IconButton(
+                        onClick = { onRemoveRequest?.invoke() },
+                        modifier = Modifier.size(42.dp).clip(RoundedCornerShape(12.dp))
+                            .background(Red.copy(alpha = .14f))
+                            .border(1.dp, Red.copy(alpha = .45f), RoundedCornerShape(12.dp))
+                    ) { Icon(Icons.Default.DeleteOutline, "Discard link", tint = Red, modifier = Modifier.size(20.dp)) }
+                }
+                val details = buildList {
+                    if (item.durationSeconds > 0L) add(formatPreviewDuration(item.durationSeconds))
+                    if (item.estimatedSizeBytes > 0L) add(formatBytesLabel(item.estimatedSizeBytes))
+                }.joinToString(" · ")
+                Text(
+                    details.ifBlank { "Link accepted · Details may still be loading" },
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
+            }
+
             when (item.status) {
                 DownloadStatus.STARTING -> {
                     Text("Preparing download…", color = TextMuted, fontSize = 10.sp)
@@ -677,7 +1092,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                 else -> {
                     if (item.error.isNotBlank()) {
                         Text(friendlyError(item.error), color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    } else {
+                    } else if (!item.awaitingChoice) {
                         Text(if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3", color = TextMuted, fontSize = 10.sp)
                     }
                 }
@@ -968,7 +1383,15 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
     var maxConcurrent by remember { mutableIntStateOf(QueueStore.maxConcurrent(context)) }
     var termuxInstalled by remember { mutableStateOf(TermuxBridge.isInstalled(context)) }
     var termuxPermission by remember { mutableStateOf(TermuxBridge.hasRunPermission(context)) }
+    var notificationsAllowed by remember { mutableStateOf(LinkStatusNotification.canPost(context)) }
     var engineStatus by remember { mutableStateOf("Not checked") }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            notificationsAllowed = LinkStatusNotification.canPost(context)
+            delay(750)
+        }
+    }
     val clipboard = LocalClipboardManager.current
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -1017,6 +1440,35 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                             Text("Your download folder and Termux connection are configured.", color = TextMuted, fontSize = 10.sp)
                         }
                     }
+                }
+            }
+        }
+        item {
+            SettingsCard(
+                "NOTIFICATIONS",
+                "Allow Download Studio to confirm shared links in your Android notification shade."
+            ) {
+                StatusLine(
+                    "Shared-link notifications",
+                    notificationsAllowed,
+                    if (notificationsAllowed) "Enabled" else "Permission or notifications disabled"
+                )
+                Button(
+                    onClick = {
+                        val settingsIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        }
+                        runCatching { context.startActivity(settingsIntent) }
+                            .onFailure {
+                                Toast.makeText(context, "Open Android Settings → Apps → Download Studio → Notifications.", Toast.LENGTH_LONG).show()
+                            }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Panel2)
+                ) {
+                    Icon(Icons.Default.NotificationsActive, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (notificationsAllowed) "Manage notification settings" else "Enable notifications")
                 }
             }
         }
@@ -1166,51 +1618,6 @@ private fun StatusLine(title: String, good: Boolean, detail: String) {
     }
 }
 
-@Composable
-private fun DownloadDetailsDialog(item: DownloadItem, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Panel,
-        title = { Text(displayTitle(item), color = TextMain, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DetailLine("Type", if (item.mode == DownloadMode.VIDEO) "Best available video + audio" else "Best available audio · MP3")
-                DetailLine("Status", friendlyStatus(item.status))
-                DetailLine("Download date", formatDownloadDate(item))
-                DetailLine("Progress", "${(item.progress * 100).toInt()}%")
-                DetailLine("Downloaded", item.downloaded)
-                DetailLine("Total size", item.totalSize)
-                DetailLine("Speed", item.speed)
-                DetailLine("ETA", item.eta)
-                if (item.status == DownloadStatus.PROCESSING) {
-                    DetailLine("Processing stage", item.processingStage.ifBlank { "Finalizing media" })
-                }
-                DetailLine("Source", item.url)
-                if (item.outputPath.isNotBlank()) DetailLine("Saved file", item.outputPath)
-                if (item.error.isNotBlank()) Text(friendlyError(item.error), color = Red, fontSize = 11.sp)
-            }
-        },
-        confirmButton = {
-            Row {
-                if (item.status == DownloadStatus.DOWNLOADING) TextButton(onClick = { DownloadCoordinator.pause(item.id); onDismiss() }) { Text("Pause") }
-                if (item.status == DownloadStatus.PAUSED) TextButton(onClick = { DownloadCoordinator.resume(item.id); onDismiss() }) { Text("Resume") }
-                if (item.status in setOf(DownloadStatus.DOWNLOADING, DownloadStatus.STARTING, DownloadStatus.PAUSED, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)) TextButton(onClick = { DownloadCoordinator.stop(item.id); onDismiss() }) { Text("Stop", color = Red) }
-                TextButton(onClick = onDismiss) { Text("Close") }
-            }
-        }
-    )
-}
-
-@Composable
-private fun DetailLine(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(label.uppercase(), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-        Text(value, color = TextMain, fontSize = 11.sp)
-    }
-}
-
-
 private fun extractFirstUrl(raw: String): String? =
     Regex("https?://[^\\s<>\\\"]+", RegexOption.IGNORE_CASE)
         .find(raw)?.value?.trimEnd('.', ',', ')', ']', '}', '"', '\'')
@@ -1343,6 +1750,18 @@ private data class PreviewMetadata(
     val thumbnailUrl: String = "",
     val durationSeconds: Long = 0L
 )
+
+private fun formatBytesLabel(bytes: Long): String {
+    if (bytes <= 0L) return "Size unavailable"
+    val units = listOf("B", "KB", "MB", "GB", "TB")
+    var value = bytes.toDouble()
+    var index = 0
+    while (value >= 1024 && index < units.lastIndex) {
+        value /= 1024
+        index++
+    }
+    return "%.1f %s".format(value, units[index])
+}
 
 private fun mediaSiteName(rawUrl: String): String {
     val host = runCatching { Uri.parse(rawUrl).host?.lowercase(Locale.ROOT)?.removePrefix("www.") }.getOrNull().orEmpty()

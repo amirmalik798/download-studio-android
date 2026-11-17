@@ -84,6 +84,101 @@ object StorageAccess {
         node.takeIf { it.exists() && it.isFile }
     }.getOrNull()
 
+
+    data class FolderScanResult(val matches: List<String>, val complete: Boolean)
+
+    private data class TreeChild(val uri: Uri, val name: String, val isDirectory: Boolean)
+
+    /**
+     * Query the DocumentsProvider directly so a failed/null provider query is
+     * distinguishable from a successfully enumerated empty directory. This is
+     * essential: an unreadable folder must never cause queue entries to vanish.
+     */
+    private fun queryTreeChildren(context: Context, parentUri: Uri): List<TreeChild>? = runCatching {
+        val treeUri = QueueStore.treeUri(context)?.let(Uri::parse) ?: return null
+        val parentDocumentId = DocumentsContract.getDocumentId(parentUri)
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocumentId)
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+        val cursor = context.contentResolver.query(childrenUri, projection, null, null, null) ?: return null
+        cursor.use { rows ->
+            val idColumn = rows.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameColumn = rows.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val mimeColumn = rows.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            buildList {
+                while (rows.moveToNext()) {
+                    val documentId = rows.getString(idColumn) ?: continue
+                    val displayName = rows.getString(nameColumn)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: throw IllegalStateException("DocumentsProvider omitted a child document name.")
+                    val mimeType = rows.getString(mimeColumn)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: throw IllegalStateException("DocumentsProvider omitted a child MIME type.")
+                    add(
+                        TreeChild(
+                            uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
+                            name = displayName,
+                            isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+                        )
+                    )
+                }
+            }
+        }
+    }.getOrNull()
+
+    /**
+     * Search only the configured document tree for a previously downloaded file.
+     * Null or incomplete results mean "unknown", not "missing"; callers must
+     * preserve queue history in those cases.
+     */
+    fun scanConfiguredDownloadsFolder(
+        context: Context,
+        fileName: String,
+        maxEntries: Int = 8000,
+        maxDepth: Int = 8
+    ): FolderScanResult? = runCatching {
+        if (fileName.isBlank() || fileName.contains('/') || fileName == "." || fileName == "..") return null
+        val base = destinationPath(context)?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
+        val root = treeRoot(context) ?: return null
+        if (!root.exists() || !root.isDirectory) return null
+
+        val matches = linkedSetOf<String>()
+        var visited = 0
+        var complete = true
+
+        fun visit(directoryUri: Uri, relative: String, depth: Int) {
+            if (depth > maxDepth) {
+                complete = false
+                return
+            }
+            val children = queryTreeChildren(context, directoryUri)
+            if (children == null) {
+                complete = false
+                return
+            }
+            for (child in children) {
+                visited++
+                if (visited > maxEntries) {
+                    complete = false
+                    return
+                }
+                if (!child.isDirectory && child.name == fileName) {
+                    matches.add("$base/${relative}${child.name}")
+                } else if (child.isDirectory && !(depth == 0 && child.name == "DownloadStudioState")) {
+                    val next = if (relative.isEmpty()) "${child.name}/" else "$relative${child.name}/"
+                    visit(child.uri, next, depth + 1)
+                    if (!complete) return
+                }
+            }
+        }
+
+        visit(root.uri, "", 0)
+        FolderScanResult(matches.toList(), complete)
+    }.getOrNull()
+
     /** Resolve the parent directory of a completed download for file-manager intents. */
     fun findDownloadedFolder(context: Context, outputPath: String): DocumentFile? =
         findDownloadedDocument(context, outputPath)?.parentFile

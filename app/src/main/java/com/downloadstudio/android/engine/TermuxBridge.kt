@@ -1,5 +1,6 @@
 package com.downloadstudio.android.engine
 
+import android.net.Uri
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -68,9 +69,12 @@ object TermuxBridge {
         val temp = "$stateDir/preview-$requestId.tmp"
         val parser = "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); " +
             "clean=lambda v: str(v or '').replace('\\r',' ').replace('\\n',' ').strip(); " +
+            "formats=d.get('requested_formats') or []; sizes=[f.get('filesize_approx') or f.get('filesize') or 0 for f in formats if isinstance(f,dict)]; " +
+            "size=d.get('filesize_approx') or d.get('filesize') or (sum(sizes) if sizes else 0); " +
             "print('DS_TITLE:'+clean(d.get('title'))); " +
             "print('DS_THUMBNAIL:'+clean(d.get('thumbnail'))); " +
-            "print('DS_DURATION:'+clean(d.get('duration')))"
+            "print('DS_DURATION:'+clean(d.get('duration'))); " +
+            "print('DS_SIZE:'+clean(size))"
         return "mkdir -p ${q(stateDir)}; " +
             "rm -f ${q(raw)} ${q(temp)}; printf 'PENDING\\n' > ${q(result)}; " +
             "if timeout 24s yt-dlp --ignore-config --no-warnings --no-playlist --skip-download --dump-single-json " +
@@ -82,12 +86,21 @@ object TermuxBridge {
             "rm -f ${q(raw)} ${q(temp)}"
     }
 
-    fun downloadScript(id: String, url: String, mode: String, destination: String): String {
+    fun downloadScript(id: String, url: String, mode: String, destination: String, runToken: String = ""): String {
+        require(id.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid download id." }
+        require(runToken.isBlank() || runToken.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid execution token." }
+        val executionKey = if (runToken.isBlank()) id else "$id-$runToken"
+        require(mode == "VIDEO" || mode == "AUDIO") { "Unsupported download format." }
+        val uri = Uri.parse(url)
+        require(url.length <= 4096 && (uri.scheme == "https" || uri.scheme == "http") &&
+            !uri.host.isNullOrBlank() && uri.userInfo == null
+        ) { "A valid HTTP or HTTPS media link is required." }
+        require(destination.startsWith("/")) { "Invalid download folder." }
         val q = ::shellQuote
         val stateDir = "$destination/DownloadStudioState"
-        val log = "$stateDir/$id.log"
-        val pid = "$stateDir/$id.pid"
-        val exit = "$stateDir/$id.exit"
+        val log = "$stateDir/$executionKey.log"
+        val pid = "$stateDir/$executionKey.pid"
+        val exit = "$stateDir/$executionKey.exit"
         // Keep titles short enough for Android/Linux filename limits, including Unicode titles.
         val output = "$destination/%(title).40s-%(id)s.%(ext)s"
         val common = "--newline --progress --concurrent-fragments 1 --ignore-config --no-playlist --continue -o ${q(output)} " +
@@ -117,16 +130,21 @@ object TermuxBridge {
             "ds_state=\$(ps -o stat= -p \"\$ds_pid\" 2>/dev/null | tr -d ' '); " +
             "case \"\$ds_state\" in T*) ds_is_stopped=1 ;; *) ds_is_stopped=0 ;; esac; " +
             "if [ \"\$((ds_now-ds_watch_start))\" -ge 21600 ] || { [ \"\$ds_is_stopped\" -eq 0 ] && [ \"\$((ds_now-ds_log_mtime))\" -ge 900 ]; }; then " +
-            "kill -INT \"\$ds_pid\" 2>/dev/null || true; break; fi; done) & " +
+            "kill -CONT \"\$ds_pid\" 2>/dev/null || true; sleep 0.1; kill -INT \"\$ds_pid\" 2>/dev/null || true; break; fi; done) & " +
             "ds_watch_pid=\$!; wait \"\$ds_pid\"; ds_code=\$?; " +
             "kill \"\$ds_watch_pid\" 2>/dev/null || true; wait \"\$ds_watch_pid\" 2>/dev/null || true; " +
             "printf '%s' \"\$ds_code\" > " + q(exit) + "; exit \"\$ds_code\""
     }
 
-    fun signalScript(destination: String, id: String, signal: String): String {
+    fun signalScript(destination: String, id: String, signal: String, runToken: String = ""): String {
+        require(id.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid download id." }
+        require(runToken.isBlank() || runToken.matches(Regex("[A-Za-z0-9_-]{1,48}"))) { "Invalid execution token." }
         require(signal in setOf("STOP", "CONT", "INT", "TERM"))
-        val pidFile = "$destination/DownloadStudioState/$id.pid"
-        return "ds_n=0; while [ ! -f ${shellQuote(pidFile)} ] && [ \"\$ds_n\" -lt 20 ]; do sleep 0.25; ds_n=\$((ds_n+1)); done; " +
-            "if [ -f ${shellQuote(pidFile)} ]; then ds_pid=\$(cat ${shellQuote(pidFile)}); kill -$signal \"\$ds_pid\" 2>/dev/null || true; fi"
+        val executionKey = if (runToken.isBlank()) id else "$id-$runToken"
+        val pidFile = "$destination/DownloadStudioState/$executionKey.pid"
+        return "ds_n=0; while [ ! -f ${shellQuote(pidFile)} ] && [ \"\$ds_n\" -lt 120 ]; do sleep 0.25; ds_n=\$((ds_n+1)); done; " +
+            "if [ -f ${shellQuote(pidFile)} ]; then ds_pid=\$(cat ${shellQuote(pidFile)}); " +
+            "case \"\$ds_pid\" in *[!0-9]*) exit 0 ;; esac; [ -n \"\$ds_pid\" ] || exit 0; " +
+            "kill -CONT \"\$ds_pid\" 2>/dev/null || true; sleep 0.1; kill -$signal \"\$ds_pid\" 2>/dev/null || true; fi"
     }
 }
