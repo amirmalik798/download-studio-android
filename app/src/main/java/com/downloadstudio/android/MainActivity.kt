@@ -715,7 +715,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
             value = search,
             onValueChange = { search = it },
             modifier = Modifier.fillMaxWidth().premiumInset(RoundedCornerShape(15.dp)),
-            placeholder = { Text("Search your media library", color = TextMuted) },
+            placeholder = { Text("Search titles, websites, or links", color = TextMuted) },
             leadingIcon = { Icon(Icons.Default.Search, null, tint = Cyan) },
             trailingIcon = {
                 if (search.isNotBlank()) {
