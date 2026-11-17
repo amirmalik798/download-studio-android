@@ -2072,7 +2072,7 @@ private fun VideoThumbnailPreview(rawUrl: String) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(176.dp)
+            .height(190.dp)
             .premiumInset(RoundedCornerShape(17.dp)),
         contentAlignment = Alignment.Center
     ) {
