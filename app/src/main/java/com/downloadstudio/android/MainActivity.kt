@@ -36,14 +36,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.downloadstudio.android.data.DownloadItem
@@ -65,17 +68,51 @@ import java.net.InetAddress
 import java.net.URI
 import java.util.Locale
 
-private val Ink = Color(0xFF090E19)
-private val Panel = Color(0xFF111B2D)
-private val Panel2 = Color(0xFF17243A)
-private val Line = Color(0xFF26364F)
-private val TextMain = Color(0xFFF3F7FF)
-private val TextMuted = Color(0xFF91A2BC)
-private val Blue = Color(0xFF4D8DFF)
-private val Cyan = Color(0xFF5BE0F5)
-private val Green = Color(0xFF36D6A0)
-private val Violet = Color(0xFFA78BFA)
-private val Red = Color(0xFFFF7185)
+private val Ink = Color(0xFF202225)
+private val Panel = Color(0xFF292C30)
+private val Panel2 = Color(0xFF24272A)
+private val Inset = Color(0xFF1D2023)
+private val Line = Color(0xFF3A3F43)
+private val TextMain = Color(0xFFF1F0ED)
+private val TextMuted = Color(0xFFA1A3A5)
+private val Blue = Color(0xFFFF5A1F)
+private val Cyan = Color(0xFFFF8B50)
+private val Green = Color(0xFF6BC6A1)
+private val Violet = Color(0xFFB5A6A1)
+private val Red = Color(0xFFFF7168)
+
+private fun Modifier.neoRaised(
+    shape: Shape,
+    elevation: Dp = 10.dp
+): Modifier = this
+    .shadow(
+        elevation = elevation,
+        shape = shape,
+        clip = false,
+        ambientColor = Color(0xFF111315),
+        spotColor = Color(0xFF484D51)
+    )
+    .border(
+        width = 1.dp,
+        brush = Brush.linearGradient(
+            listOf(
+                Color(0xFF474C50).copy(alpha = 0.52f),
+                Color(0xFF151719).copy(alpha = 0.62f)
+            )
+        ),
+        shape = shape
+    )
+
+private fun Modifier.neoInset(shape: Shape): Modifier = this
+    .clip(shape)
+    .background(Inset)
+    .border(
+        width = 1.dp,
+        brush = Brush.linearGradient(
+            listOf(Color(0xFF151719), Color(0xFF3B4044))
+        ),
+        shape = shape
+    )
 
 class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -119,8 +156,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = android.graphics.Color.rgb(9, 14, 25)
-        window.navigationBarColor = android.graphics.Color.rgb(9, 14, 25)
+        window.statusBarColor = android.graphics.Color.rgb(32, 34, 37)
+        window.navigationBarColor = android.graphics.Color.rgb(32, 34, 37)
         DownloadCoordinator.initialize(this)
         handleIncoming(intent)
         setContent {
@@ -234,7 +271,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
         containerColor = Ink,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         bottomBar = {
-            NavigationBar(containerColor = Color(0xFF0D1524), tonalElevation = 0.dp) {
+            NavigationBar(containerColor = Panel2, tonalElevation = 0.dp) {
                 NavigationBarItem(selected = tab == AppTab.HOME, enabled = setupReady, onClick = { if (setupReady) tab = AppTab.HOME }, icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
                 NavigationBarItem(selected = tab == AppTab.DOWNLOADS, enabled = setupReady, onClick = { if (setupReady) tab = AppTab.DOWNLOADS }, icon = { Icon(Icons.Default.Download, null) }, label = { Text("Downloads") })
                 NavigationBarItem(selected = tab == AppTab.SETTINGS, onClick = { tab = AppTab.SETTINGS }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
@@ -299,7 +336,7 @@ private fun DownloadStudioRoot(onIncomingUrl: (String, DownloadMode) -> Result<U
 @Composable
 private fun TopHeader(tab: AppTab, onSettings: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().background(Ink).padding(horizontal = 20.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().background(Panel2).padding(horizontal = 20.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
@@ -312,7 +349,7 @@ private fun TopHeader(tab: AppTab, onSettings: () -> Unit) {
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.clip(CircleShape).background(Color(0xFF133A35)).padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Box(Modifier.clip(CircleShape).background(Color(0xFF26342F)).padding(horizontal = 10.dp, vertical = 6.dp)) {
                 Text("ON DEVICE", color = Green, fontSize = 9.sp, fontWeight = FontWeight.Bold)
             }
             IconButton(onClick = onSettings) { Icon(Icons.Default.Tune, "Settings", tint = TextMuted) }
@@ -331,7 +368,7 @@ private fun HomeScreen(
     val completed = items.count { it.status == DownloadStatus.COMPLETED }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line)) {
+            Card(modifier = Modifier.neoRaised(RoundedCornerShape(22.dp), 10.dp), colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line.copy(alpha = .55f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     val clipboard = LocalClipboardManager.current
                     val context = LocalContext.current
@@ -358,14 +395,14 @@ private fun HomeScreen(
                         }
                     }
                     OutlinedTextField(
-                        value = url, onValueChange = onUrl, modifier = Modifier.fillMaxWidth(),
+                        value = url, onValueChange = onUrl, modifier = Modifier.fillMaxWidth().neoInset(RoundedCornerShape(14.dp)),
                         placeholder = { Text("Paste a video or media URL", color = TextMuted) },
                         leadingIcon = { Icon(Icons.Default.Language, null, tint = TextMuted) },
                         singleLine = true, shape = RoundedCornerShape(14.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = TextMain, unfocusedTextColor = TextMain,
                             focusedBorderColor = Blue, unfocusedBorderColor = Line,
-                            cursorColor = Cyan, focusedContainerColor = Color(0xFF0C1525), unfocusedContainerColor = Color(0xFF0C1525)
+                            cursorColor = Cyan, focusedContainerColor = Inset, unfocusedContainerColor = Inset
                         )
                     )
                     VideoThumbnailPreview(url)
@@ -378,7 +415,8 @@ private fun HomeScreen(
                         }.getOrDefault(false),
                         modifier = Modifier.fillMaxWidth().height(50.dp),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Blue)
+                        colors = ButtonDefaults.buttonColors(containerColor = Blue),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 7.dp, pressedElevation = 2.dp)
                     ) {
                         Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Add download", fontWeight = FontWeight.Bold)
                     }
@@ -417,7 +455,7 @@ private fun HomeScreen(
 
 @Composable
 private fun ModeSelector(mode: DownloadMode, onMode: (DownloadMode) -> Unit) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xFF0B1423)).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    Row(Modifier.fillMaxWidth().neoInset(RoundedCornerShape(14.dp)).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         ModeChip("Video", "Best available video + audio", mode == DownloadMode.VIDEO, Blue, Modifier.weight(1f)) { onMode(DownloadMode.VIDEO) }
         ModeChip("Audio", "Best available audio", mode == DownloadMode.AUDIO, Green, Modifier.weight(1f)) { onMode(DownloadMode.AUDIO) }
     }
@@ -425,7 +463,9 @@ private fun ModeSelector(mode: DownloadMode, onMode: (DownloadMode) -> Unit) {
 
 @Composable
 private fun ModeChip(title: String, detail: String, selected: Boolean, color: Color, modifier: Modifier, onClick: () -> Unit) {
-    Column(modifier.clip(RoundedCornerShape(11.dp)).background(if (selected) color.copy(alpha = .18f) else Color.Transparent).clickable(onClick = onClick).padding(vertical = 10.dp, horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(modifier.clip(RoundedCornerShape(11.dp)).background(if (selected) color.copy(alpha = .15f) else Color.Transparent)
+        .border(if (selected) 1.dp else 0.dp, if (selected) color.copy(alpha = .5f) else Color.Transparent, RoundedCornerShape(11.dp))
+        .clickable(onClick = onClick).padding(vertical = 10.dp, horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(title, color = if (selected) color else TextMain, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Text(detail, color = TextMuted, fontSize = 9.sp)
     }
@@ -433,7 +473,7 @@ private fun ModeChip(title: String, detail: String, selected: Boolean, color: Co
 
 @Composable
 private fun StatCard(label: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, color: Color, modifier: Modifier = Modifier) {
-    Card(modifier, colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line)) {
+    Card(modifier = modifier.neoRaised(RoundedCornerShape(16.dp), 7.dp), colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line.copy(alpha = .55f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Icon(icon, null, tint = color, modifier = Modifier.size(18.dp))
             Text(value, color = TextMain, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
@@ -444,7 +484,7 @@ private fun StatCard(label: String, value: String, icon: androidx.compose.ui.gra
 
 @Composable
 private fun ShareFeatureCard() {
-    Card(colors = CardDefaults.cardColors(containerColor = Panel2), shape = RoundedCornerShape(18.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line)) {
+    Card(modifier = Modifier.neoRaised(RoundedCornerShape(18.dp), 8.dp), colors = CardDefaults.cardColors(containerColor = Panel2), shape = RoundedCornerShape(18.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line.copy(alpha = .55f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(Violet.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.Share, null, tint = Violet)
@@ -574,9 +614,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 maxLines = 1
             )
             Box(
-                Modifier.clip(RoundedCornerShape(11.dp))
-                    .background(Panel2)
-                    .border(1.dp, Line, RoundedCornerShape(11.dp))
+                Modifier.neoInset(RoundedCornerShape(11.dp))
                     .padding(horizontal = 10.dp, vertical = 8.dp)
             ) {
                 Text("${visibleItems.size} / ${items.size}", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -598,7 +636,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
         OutlinedTextField(
             value = search,
             onValueChange = { search = it },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().neoInset(RoundedCornerShape(15.dp)),
             placeholder = { Text("Search titles, websites, or links", color = TextMuted) },
             leadingIcon = { Icon(Icons.Default.Search, null, tint = Cyan) },
             trailingIcon = {
@@ -616,8 +654,8 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
                 focusedBorderColor = Blue,
                 unfocusedBorderColor = Line,
                 cursorColor = Cyan,
-                focusedContainerColor = Panel,
-                unfocusedContainerColor = Panel
+                focusedContainerColor = Inset,
+                unfocusedContainerColor = Inset
             )
         )
 
@@ -636,6 +674,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
         AnimatedVisibility(visible = advancedFilters) {
             Column(
                 Modifier.fillMaxWidth()
+                    .neoRaised(RoundedCornerShape(15.dp), 7.dp)
                     .clip(RoundedCornerShape(15.dp))
                     .background(Panel)
                     .border(1.dp, Line, RoundedCornerShape(15.dp))
@@ -863,9 +902,10 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
         else -> Cyan
     }
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().neoRaised(RoundedCornerShape(16.dp), 7.dp).clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(16.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Line)
+        border = androidx.compose.foundation.BorderStroke(1.dp, Line.copy(alpha = .55f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1368,7 +1408,7 @@ private fun shareDownloadedFile(context: android.content.Context, item: Download
 @Composable
 private fun EmptyState(title: String, detail: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
     Column(Modifier.fillMaxWidth().padding(vertical = 46.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(Modifier.size(62.dp).clip(RoundedCornerShape(20.dp)).background(Panel2), contentAlignment = Alignment.Center) { Icon(icon, null, tint = Cyan, modifier = Modifier.size(28.dp)) }
+        Box(Modifier.size(62.dp).neoRaised(RoundedCornerShape(20.dp), 7.dp).clip(RoundedCornerShape(20.dp)).background(Panel2), contentAlignment = Alignment.Center) { Icon(icon, null, tint = Cyan, modifier = Modifier.size(28.dp)) }
         Text(title, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Text(detail, color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.widthIn(max = 270.dp))
     }
@@ -1422,7 +1462,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                 Text("Configure the on-device download engine", color = TextMuted, fontSize = 12.sp)
             }
             if (setupRequired) {
-                Card(colors = CardDefaults.cardColors(containerColor = Panel2), border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = .65f)), shape = RoundedCornerShape(16.dp)) {
+                Card(modifier = Modifier.neoRaised(RoundedCornerShape(16.dp), 8.dp), colors = CardDefaults.cardColors(containerColor = Panel2), border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = .55f)), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("LET'S FINISH SETUP", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Text("Complete these three steps in order. Your downloads and saved files are not affected by setup changes.", color = TextMain, fontSize = 11.sp, lineHeight = 16.sp)
@@ -1432,7 +1472,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
                     }
                 }
             } else {
-                Card(colors = CardDefaults.cardColors(containerColor = Panel2), shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Green.copy(alpha = .4f))) {
+                Card(modifier = Modifier.neoRaised(RoundedCornerShape(16.dp), 8.dp), colors = CardDefaults.cardColors(containerColor = Panel2), shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Green.copy(alpha = .35f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Icon(Icons.Default.CheckCircle, null, tint = Green)
                         Column {
@@ -1599,7 +1639,7 @@ private fun SettingsScreen(setupRequired: Boolean = false) {
 
 @Composable
 private fun SettingsCard(title: String, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line)) {
+    Card(modifier = Modifier.neoRaised(RoundedCornerShape(18.dp), 8.dp), colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Line.copy(alpha = .55f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(11.dp), content = {
             Text(title, color = Cyan, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.1.sp)
             Text(subtitle, color = TextMuted, fontSize = 10.sp, lineHeight = 15.sp)
@@ -1956,7 +1996,7 @@ private fun VideoThumbnailPreview(rawUrl: String) {
             .fillMaxWidth()
             .height(190.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF0C1525)),
+            .background(Inset),
         contentAlignment = Alignment.Center
     ) {
         if (metadata.thumbnailUrl.isNotBlank() && !imageFailed) {
