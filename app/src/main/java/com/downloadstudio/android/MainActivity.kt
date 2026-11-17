@@ -164,7 +164,7 @@ class MainActivity : ComponentActivity() {
             val scheme = darkColorScheme(
                 primary = Yellow, secondary = Cyan, tertiary = Violet,
                 background = Ink, surface = Panel, surfaceVariant = Panel2,
-                onPrimary = Color.White, onBackground = TextMain, onSurface = TextMain,
+                onPrimary = Ink, onBackground = TextMain, onSurface = TextMain,
                 onSurfaceVariant = TextMuted, outline = Line
             )
             MaterialTheme(colorScheme = scheme) {
@@ -400,9 +400,9 @@ private fun HomeHero() {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("THE MEDIA WORKSPACE", color = Yellow, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.8.sp)
             Spacer(Modifier.weight(1f))
-            Text("01 / 03", color = TextMuted.copy(alpha = .72f), fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            Text("DIRECT TO DEVICE", color = TextMuted.copy(alpha = .85f), fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp)
         }
-        Column(verticalArrangement = Arrangement.spacedBy((-3).dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
             Text("YOUR MEDIA.", color = TextMain, fontSize = 34.sp, lineHeight = 36.sp, fontWeight = FontWeight.Black, letterSpacing = .2.sp)
             Text("ON YOUR TERMS.", color = Yellow, fontSize = 34.sp, lineHeight = 36.sp, fontWeight = FontWeight.Black, letterSpacing = .2.sp)
         }
