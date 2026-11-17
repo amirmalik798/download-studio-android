@@ -340,7 +340,7 @@ private fun TopHeader(tab: AppTab, onSettings: () -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-            Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(Brush.linearGradient(listOf(Blue, Violet))), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(42.dp).neoRaised(RoundedCornerShape(14.dp), 7.dp).clip(RoundedCornerShape(14.dp)).background(Brush.linearGradient(listOf(Blue, Violet))), contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.Download, null, tint = Color.White)
             }
             Column {
@@ -352,7 +352,7 @@ private fun TopHeader(tab: AppTab, onSettings: () -> Unit) {
             Box(Modifier.clip(CircleShape).background(Color(0xFF26342F)).padding(horizontal = 10.dp, vertical = 6.dp)) {
                 Text("ON DEVICE", color = Green, fontSize = 9.sp, fontWeight = FontWeight.Bold)
             }
-            IconButton(onClick = onSettings) { Icon(Icons.Default.Tune, "Settings", tint = TextMuted) }
+            IconButton(onClick = onSettings, modifier = Modifier.size(40.dp).neoRaised(CircleShape, 5.dp)) { Icon(Icons.Default.Tune, "Settings", tint = TextMuted) }
         }
     }
     HorizontalDivider(color = Line.copy(alpha = .55f))
@@ -389,7 +389,7 @@ private fun HomeScreen(
                             Text("Paste", fontSize = 11.sp)
                         }
                         if (url.isNotBlank()) {
-                            IconButton(onClick = { onUrl("") }, modifier = Modifier.size(34.dp)) {
+                            IconButton(onClick = { onUrl("") }, modifier = Modifier.size(34.dp).neoRaised(CircleShape, 4.dp)) {
                                 Icon(Icons.Default.Close, "Clear link", tint = TextMuted)
                             }
                         }
@@ -619,15 +619,15 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
             ) {
                 Text("${visibleItems.size} / ${items.size}", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
-            IconButton(onClick = { helpOpen = true }) { Icon(Icons.Default.Info, "Downloads help", tint = TextMuted) }
-            IconButton(onClick = { advancedFilters = !advancedFilters }) {
+            IconButton(onClick = { helpOpen = true }, modifier = Modifier.size(40.dp).neoRaised(CircleShape, 5.dp)) { Icon(Icons.Default.Info, "Downloads help", tint = TextMuted) }
+            IconButton(onClick = { advancedFilters = !advancedFilters }, modifier = Modifier.size(40.dp).neoRaised(CircleShape, 5.dp)) {
                 Icon(
                     if (advancedFilters) Icons.Default.Tune else Icons.Default.FilterList,
                     "More filters",
                     tint = Cyan
                 )
             }
-            IconButton(onClick = { showClearConfirmation = true }, enabled = items.isNotEmpty()) {
+            IconButton(onClick = { showClearConfirmation = true }, enabled = items.isNotEmpty(), modifier = Modifier.size(40.dp).neoRaised(CircleShape, 5.dp)) {
                 Icon(Icons.Default.DeleteSweep, "Clear downloads list", tint = if (items.isNotEmpty()) Red else TextMuted)
             }
         }
@@ -641,7 +641,7 @@ private fun DownloadsScreen(items: List<DownloadItem>, onOpenItem: (DownloadItem
             leadingIcon = { Icon(Icons.Default.Search, null, tint = Cyan) },
             trailingIcon = {
                 if (search.isNotBlank()) {
-                    IconButton(onClick = { search = "" }) {
+                    IconButton(onClick = { search = "" }, modifier = Modifier.size(34.dp).neoRaised(CircleShape, 4.dp)) {
                         Icon(Icons.Default.Close, "Clear search", tint = TextMuted)
                     }
                 }
@@ -943,7 +943,7 @@ private fun DownloadRow(item: DownloadItem, onClick: () -> Unit, onRemoveRequest
                 if (!item.awaitingChoice) {
                     var actionsExpanded by remember(item.id) { mutableStateOf(false) }
                     Box {
-                    IconButton(onClick = { actionsExpanded = true }, modifier = Modifier.size(32.dp)) {
+                    IconButton(onClick = { actionsExpanded = true }, modifier = Modifier.size(34.dp).neoRaised(CircleShape, 4.dp)) {
                         Icon(Icons.Default.MoreVert, "Download actions", tint = TextMuted)
                     }
                     DropdownMenu(
@@ -1995,8 +1995,7 @@ private fun VideoThumbnailPreview(rawUrl: String) {
         modifier = Modifier
             .fillMaxWidth()
             .height(190.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(Inset),
+            .neoInset(RoundedCornerShape(16.dp)),
         contentAlignment = Alignment.Center
     ) {
         if (metadata.thumbnailUrl.isNotBlank() && !imageFailed) {
